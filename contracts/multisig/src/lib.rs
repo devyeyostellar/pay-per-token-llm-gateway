@@ -349,6 +349,9 @@ fn has_unique_signers(signers: &Vec<Address>) -> bool {
 // ── Tests ────────────────────────────────────
 
 #[cfg(test)]
+mod bench;
+
+#[cfg(test)]
 mod test {
     use super::*;
     use soroban_sdk::testutils::storage::Instance as _;

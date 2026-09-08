@@ -23,8 +23,8 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Stellar-Testnet-green" alt="Stellar Testnet" />
-  <img src="https://img.shields.io/badge/NestJS-10.x-red" alt="NestJS" />
-  <img src="https://img.shields.io/badge/Next.js-14.x-black" alt="Next.js" />
+  <img src="https://img.shields.io/badge/NestJS-11.x-red" alt="NestJS" />
+  <img src="https://img.shields.io/badge/Next.js-15.x-black" alt="Next.js" />
   <img src="https://img.shields.io/badge/Soroban-Rust-orange" alt="Soroban Rust" />
   <img src="https://img.shields.io/badge/License-MIT-blue" alt="License MIT" />
 </p>

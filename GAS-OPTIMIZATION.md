@@ -4,15 +4,15 @@
 > (`payment-verifier`, `credit-escrow`, `multisig`). Covers the storage-layout
 > redesign (before/after), hot-path analysis, contract size, and the
 > reproducible benchmarking methodology.
-> Last updated: **2026-09-08**.
+> Last updated: **2026-09-08** (benchmarks now **executed** — see §5.5).
 
 ## 1. Executive summary
 
-| Contract           | WASM size                | Storage model        | Hot-path cost scaling                            |
-| ------------------ | ------------------------ | -------------------- | ------------------------------------------------ |
-| `payment-verifier` | ~20–24 KB (release, opt) | per-entry persistent | **O(1)** writes/reads regardless of history size |
-| `credit-escrow`    | ~22–26 KB                | per-entry persistent | **O(1)** per user/quote op                       |
-| `multisig`         | ~16–20 KB                | per-entry persistent | **O(1)** per proposal op                         |
+| Contract           | WASM size (2026-09-08) | Storage model        | Hot-path cost scaling                                                          |
+| ------------------ | ---------------------- | -------------------- | ------------------------------------------------------------------------------ |
+| `payment-verifier` | **6.6 KiB** (measured) | per-entry persistent | **O(1)** — verified: fee flat 1.004× at 1k history; entries/bytes identical    |
+| `credit-escrow`    | **8.5 KiB** (measured) | per-entry persistent | **O(1)** — verified: fee flat 1.004× at 1k history; entries/bytes identical    |
+| `multisig`         | **6.9 KiB** (measured) | per-entry persistent | **O(1)** — verified: fee flat 1.009× at 10k proposals; entries/bytes identical |
 
 The dominant optimization (commit `c769a99`, "perf(contracts): move
 unbounded state to persistent storage with per-entry TTL") removed the single
@@ -177,13 +177,58 @@ ls -la contracts/*/target/wasm32-unknown-unknown/release/*.wasm
 
 Gate: each WASM < 64 KB (Soroban deploy limit), target < 32 KB.
 
-### 5.5 Results ledger (fill on next toolchain run)
+### 5.5 Results ledger
 
-| Run             | Contract         | Op               | History size | cpu_insns | fee (XLM) | entries touched |
-| --------------- | ---------------- | ---------------- | ------------ | --------- | --------- | --------------- |
-| CI `cargo test` | all              | unit suite       | —            | —         | —         | —               |
-| (pending)       | payment-verifier | `record_payment` | 1            | —         | —         | —               |
-| (pending)       | payment-verifier | `record_payment` | 10,000       | —         | —         | —               |
+**Executed 2026-09-08** with Rust 1.98.1 + soroban-sdk 22.0.11 (release
+profile) using the SDK test environment's cost accounting
+(`env.cost_estimate()`). Benchmarks live in `src/bench.rs` per contract and
+run in CI as part of `cargo test` (assertions gate the O(1) invariant).
+
+| Contract         | Op                          | History size | fee (stroops) | fee (XLM) | read entries      | write entries | read bytes | write bytes |
+| ---------------- | --------------------------- | ------------ | ------------- | --------- | ----------------- | ------------- | ---------- | ----------- |
+| payment-verifier | `record_payment`            | 1            | 5,161,707     | 0.51617   | 2                 | 5             | 292 B      | 984 B       |
+| payment-verifier | `record_payment`            | 100          | 5,163,596     | 0.51636   | 2                 | 5             | 292 B      | 984 B       |
+| payment-verifier | `record_payment`            | 1,000        | 5,180,253     | 0.51803   | 2                 | 5             | 292 B      | 984 B       |
+| credit-escrow    | `charge`                    | 1            | 3,897,968     | 0.38980   | 2                 | 6             | 636 B      | 1,100 B     |
+| credit-escrow    | `charge`                    | 1,000        | 3,913,081     | 0.39131   | 2                 | 6             | 636 B      | 1,100 B     |
+| multisig         | `propose`                   | 1            | 1,776,196     | 0.17762   | 1                 | 2             | 444 B      | 700 B       |
+| multisig         | `propose`                   | 10,000       | 1,792,818     | 0.17928   | 1                 | 2             | 444 B      | 700 B       |
+| multisig         | `approve`                   | —            | 1,585,703     | 0.15857   | —                 | 2             | —          | —           |
+| payment-verifier | `get_payments(0, u32::MAX)` | 120          | —             | —         | **101** (clamped) | —             | —          | —           |
+
+**Verification of the O(1) claim (assertions in `bench.rs`, enforced in CI):**
+
+| Contract         | Op                    | fee@large / fee@1      | write_entries@large == @1 |
+| ---------------- | --------------------- | ---------------------- | ------------------------- |
+| payment-verifier | `record_payment` (1k) | **1.004** (< 1.5 gate) | identical (5 == 5)        |
+| credit-escrow    | `charge` (1k)         | **1.004** (< 1.5 gate) | identical (6 == 6)        |
+| multisig         | `propose` (10k)       | **1.009** (< 1.5 gate) | identical (2 == 2)        |
+
+Notes on the numbers:
+
+- **Per-call cost is constant in history size** — fee grows ≤ 0.9% across
+  1 → 1,000/10,000 records, and read/write entry counts and byte counts are
+  byte-identical. This is the empirical confirmation of the per-entry
+  persistent-storage redesign (commit `c769a99`).
+- The test env's `instructions` counter is _not_ gated: it grows with
+  accumulated state because the test host diffs the full storage footprint
+  when closing an invocation (the SDK docs warn the estimate is only "as
+  useful as the preceding setup"). The real on-chain cost drivers — entry
+  counts and the derived fee — are flat, which is what Soroban charges on.
+- Fee estimates use the SDK's snapshot of pubnet fee rates (2024-12-11),
+  stroops = 10⁻⁷ XLM. Actual testnet/mainnet fees depend on network fee
+  rates at submission time; `stellar contract invoke` output (cpu_insns,
+  mem_bytes, disk_bytes, fee) is the authoritative source for a live run.
+
+**Contract size (WASM, `opt-level="z"` + LTO + strip, 2026-09-08):**
+
+| Contract         | WASM size             | Deploy limit (64 KiB) | Headroom |
+| ---------------- | --------------------- | --------------------- | -------- |
+| payment-verifier | **6.6 KiB** (6,725 B) | ✅                    | 89.7%    |
+| credit-escrow    | **8.5 KiB** (8,677 B) | ✅                    | 86.8%    |
+| multisig         | **6.9 KiB** (7,112 B) | ✅                    | 89.1%    |
+
+Sizes are enforced in CI (build + gate step in the `contracts` job).
 
 ## 6. Recommended next optimizations (tracked)
 

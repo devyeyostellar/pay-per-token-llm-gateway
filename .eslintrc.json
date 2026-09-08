@@ -1,6 +1,6 @@
 {
   "root": true,
-  "ignorePatterns": ["dist", "coverage", "node_modules", ".next", "target"],
+  "ignorePatterns": ["dist", "coverage", "node_modules", ".next", "target", "next-env.d.ts"],
   "plugins": ["@nx"],
   "overrides": [
     {

@@ -109,11 +109,11 @@
 
 ### 3.4 Dependencies & supply chain
 
-| #   | Threat                            | Impact                   | Vector           | Mitigation                                                                                                                                                                                                                                                                                    | Status                                                           |
-| --- | --------------------------------- | ------------------------ | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| S1  | **Known vulnerable dependencies** | Varies (ReDoS, DoS, RCE) | Transitive deps  | `pnpm audit` gate at **critical** in CI; reachable runtime advisories (express, ws, body-parser, qs, uuid, lodash, js-yaml, toml, postcss, file-type) fixed via overrides (76 → 54 advisories, **0 critical**); trivy fs scan + osv-scanner report all severities; SBOM generated per release | ✅ 2026-09-08; remaining highs are major-version tracks (see §4) |
-| S2  | **Malicious install scripts**     | Supply-chain RCE         | pnpm postinstall | `allowBuilds` whitelist in `pnpm-workspace.yaml` — only prisma/esbuild/nx/@nestjs-core/@parcel-watcher may run scripts                                                                                                                                                                        | ✅ hardened                                                      |
-| S3  | **Lockfile tampering**            | —                        | —                | Lockfile committed + `--frozen-lockfile` in all CI installs                                                                                                                                                                                                                                   | ✅                                                               |
+| #   | Threat                            | Impact                   | Vector           | Mitigation                                                                                                                                                                                                                                                                                           | Status                                                   |
+| --- | --------------------------------- | ------------------------ | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| S1  | **Known vulnerable dependencies** | Varies (ReDoS, DoS, RCE) | Transitive deps  | `pnpm audit` gate at **critical** in CI; NestJS 11.2.3/Express 5.2.1 + Next 15.5.25/React 19 upgrade resolved the last runtime-reachable advisories (**0 critical, 0 runtime-reachable**, 9 total — dev-tooling only); trivy fs scan + osv-scanner report all severities; SBOM generated per release | ✅ 2026-09-08; remaining are dev-tooling tracks (see §4) |
+| S2  | **Malicious install scripts**     | Supply-chain RCE         | pnpm postinstall | `allowBuilds` whitelist in `pnpm-workspace.yaml` — only prisma/esbuild/nx/@nestjs-core/@parcel-watcher may run scripts                                                                                                                                                                               | ✅ hardened                                              |
+| S3  | **Lockfile tampering**            | —                        | —                | Lockfile committed + `--frozen-lockfile` in all CI installs                                                                                                                                                                                                                                          | ✅                                                       |
 
 ## 4. Residual risks (accepted, documented)
 
@@ -128,13 +128,15 @@
    re-quotes. Memo enforcement is deliberately off.
 4. **Cross-provider debt hopping** (P10): a payer with debt on provider A can
    use provider B. Per-provider trust model.
-5. **`next < 15` (dashboard) and `@nestjs/core 10` (moderate) advisories** and
-   **`multer 1.x` (no upload endpoints → not exploitable in this deployment)**
-   remain; fixed only by major-version upgrades (Next 15 / NestJS 11 tracks).
-6. **Soroban gas/storage benchmarks** are documented with methodology but not
-   executed in this environment (no Rust toolchain) — see
-   [`GAS-OPTIMIZATION.md`](./GAS-OPTIMIZATION.md); CI runs the contract test
-   matrix.
+5. **Dev/build-tooling advisories remain** (`nx` 19, `webpack-dev-server` 4,
+   `image-size` — no patched release exists). Build-time only, no
+   runtime-reachable path; tracked in `MAINNET_READINESS.md` §7.
+6. **Soroban gas/storage benchmarks are executed and gated in CI.**
+   `src/bench.rs` in each contract measures fee/entry costs at growing
+   history sizes and asserts the O(1) invariant (see
+   [`GAS-OPTIMIZATION.md`](./GAS-OPTIMIZATION.md) §5.5 for the 2026-09-08
+   results ledger: fee flat 1.004×–1.009×, entries byte-identical); CI also
+   gates contract WASM size (< 64 KiB).
 7. **Restore-from-archive semantics**: persistent entries not written for
    `LEDGERS_TO_LIVE` ledgers require a paid archive restore to read
    (audit-trail durability tradeoff).

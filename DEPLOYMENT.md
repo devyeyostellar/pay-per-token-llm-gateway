@@ -371,6 +371,34 @@ payment older than the quote (reused historical hash) → 402 _before quote
 issued_; amount below deposit (per-token route) → 402 "below the quoted
 deposit"; expired quote → 402.
 
+### 6.1.1 Live verification run — 2026-09-08 ✅
+
+Executed against Stellar Testnet with a freshly friendbot-funded account
+(stellar CLI 28.0.0, soroban-sdk 22, Rust 1.98.1). All three contracts were
+**deployed fresh, initialized, and exercised live**; the artifacts are still
+on testnet:
+
+| Step                           | Result          | Evidence                                                                                                                 |
+| ------------------------------ | --------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Fund fresh account (friendbot) | ✅              | `GCZZNR5U5FVSSYIBAGMV7S6G46FSKSX3QF4I2SG7ADV6U6SNCGSYU5SJ`                                                               |
+| Build WASM (release, opt)      | ✅              | `payment_verifier.wasm` 6,814 B                                                                                          |
+| Deploy payment-verifier        | ✅              | `CADOAAAF6HCEVA4AL35HMMGAQQGFE5BROQAE6VUA4TNACGIMCULCP6OF`                                                               |
+| `init(admin)`                  | ✅              | tx `2ef8ac2a…`                                                                                                           |
+| `record_payment` (live)        | ✅              | tx `3c0a518a…` — `pay_verif` event emitted                                                                               |
+| **Replay same tx_hash**        | ✅ **rejected** | VM trap `UnreachableCodeReached` (contract panicked "already recorded") — replay protection live                         |
+| `is_payment_used`              | ✅ `true`       | read-only invoke                                                                                                         |
+| `total_payments`               | ✅ `1`          | replay did not double-count                                                                                              |
+| Deploy + init multisig         | ✅              | `CDYA65VZDNJEYSFQHTNS2Y4V67SP7GKW7PTYSWILPISUPH2MZPMDKUWE`                                                               |
+| `propose` (payout path)        | ✅              | proposal #0, `proposed` event                                                                                            |
+| `approve` → quorum             | ✅              | `approved` event emitted; transfer to unfunded token failed **closed** (`MissingValue`) — fail-closed behavior confirmed |
+| Deploy + init credit-escrow    | ✅              | `CDCLIZ45BJUEXOJVJDQVU25VJRIMCF77B7TENHUZAR5JUCRITZQEJ4F3`; `balance` = 0                                                |
+
+Notes: the USDC asset contract (`CBIELT…`) is controlled by its own admin, so
+minting test USDC requires issuer cooperation — the deposit→charge leg is
+covered by the e2e suite (mocked token) and the unit benchmarks. The payout
+transfer leg requires funding the multisig with real testnet USDC; the
+fail-closed behavior when the token is unfunded was verified live.
+
 ### 6.2 Operations
 
 - Health/readiness semantics, RTO/RPO targets, backup/restore and DR

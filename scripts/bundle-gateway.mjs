@@ -31,16 +31,20 @@ await build({
   target: 'node20',
   // Prisma ships a platform-specific native query engine — it must stay in
   // node_modules (present in the runtime image) and be loaded at runtime.
-  // The @nestjs/microservices, @nestjs/platform-socket.io and
-  // class-transformer/storage specifiers are optional/lazy requires inside
-  // Nest core, websockets and mapped-types that this gateway never exercises
-  // (they are guarded by try/catch or lazy adapter loading at runtime).
+  // The @nestjs/microservices, @nestjs/platform-socket.io,
+  // @nestjs/websockets(/socket-module) and class-transformer/storage
+  // specifiers are optional/lazy requires inside Nest core, websockets and
+  // mapped-types that this gateway never exercises (they are guarded by
+  // try/catch or optional-require at runtime; websockets is not even in the
+  // dependency tree — it was removed as dead code).
   external: [
     '@prisma/client',
     '@prisma/engines',
     '@nestjs/microservices',
     '@nestjs/microservices/microservices-module',
     '@nestjs/platform-socket.io',
+    '@nestjs/websockets',
+    '@nestjs/websockets/socket-module',
     'class-transformer/storage',
   ],
   // esbuild resolves packages relative to the entry file + these extra paths.

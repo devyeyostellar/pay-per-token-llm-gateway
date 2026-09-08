@@ -11,20 +11,21 @@ matrix in this session (evidence in §0).
 
 ## 0. Verification evidence (what was actually run)
 
-| Check                                                               | Result                                                                                                                     |
-| ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `pnpm install` (pnpm 11.24, frozen-lockfile-compatible)             | ✅ Fixed — was **broken** (see F1)                                                                                         |
-| Gateway unit tests                                                  | ✅ **127/127** (10 suites)                                                                                                 |
-| Gateway e2e (`x402-flow.e2e-spec.ts`)                               | ✅ **34/34**                                                                                                               |
-| `x402-core` tests (incl. new quote-window, timeout, property-based) | ✅ **66/66** (3 suites)                                                                                                    |
-| `@x402/validation` tests (new suite + project test target)          | ✅ **25/25**                                                                                                               |
-| SDK tests                                                           | ✅ **15/15**                                                                                                               |
-| Full `nx run-many --target=test --all --coverage`                   | ✅ 6 projects green, coverage gates enforced                                                                               |
-| Gateway typecheck (`tsc -p apps/gateway/tsconfig.app.json`)         | ✅ 0 errors                                                                                                                |
-| Lint (`nx run-many --target=lint --all`, 15 projects)               | ✅ 0 errors                                                                                                                |
-| `pnpm audit`                                                        | ✅ **0 critical**; 76 → **54 advisories** after overrides (see F8)                                                         |
-| Secret scan (grep for keys/private keys across repo)                | ✅ none found                                                                                                              |
-| Soroban contracts (`cargo test`)                                    | ⚠️ **not run locally — no Rust toolchain in this environment**; CI runs it (`contracts` job); test inventory: 23 / 43 / 32 |
+| Check                                                               | Result                                                                                                                                                                                                                             |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm install` (pnpm 11.24, frozen-lockfile-compatible)             | ✅ Fixed — was **broken** (see F1)                                                                                                                                                                                                 |
+| Gateway unit tests                                                  | ✅ **127/127** (10 suites)                                                                                                                                                                                                         |
+| Gateway e2e (`x402-flow.e2e-spec.ts`)                               | ✅ **34/34**                                                                                                                                                                                                                       |
+| `x402-core` tests (incl. new quote-window, timeout, property-based) | ✅ **66/66** (3 suites)                                                                                                                                                                                                            |
+| `@x402/validation` tests (new suite + project test target)          | ✅ **25/25**                                                                                                                                                                                                                       |
+| SDK tests                                                           | ✅ **15/15**                                                                                                                                                                                                                       |
+| Full `nx run-many --target=test --all --coverage`                   | ✅ 6 projects green, coverage gates enforced                                                                                                                                                                                       |
+| Gateway typecheck (`tsc -p apps/gateway/tsconfig.app.json`)         | ✅ 0 errors                                                                                                                                                                                                                        |
+| Lint (`nx run-many --target=lint --all`, 15 projects)               | ✅ 0 errors                                                                                                                                                                                                                        |
+| `pnpm audit`                                                        | ✅ **0 critical, 0 runtime-reachable**; 54 → **9 advisories** after the NestJS 11 / Next 15 major upgrades (see F8)                                                                                                                |
+| Secret scan (grep for keys/private keys across repo)                | ✅ none found                                                                                                                                                                                                                      |
+| Soroban contracts (`cargo test`)                                    | ✅ **25 / 44 / 33 pass locally** (Rust 1.98.1 + soroban-sdk 22, incl. the new gas/storage benches); WASM sizes 6.6 / 8.5 / 6.9 KiB — see GAS-OPTIMIZATION §5.5                                                                     |
+| Live Stellar Testnet journey (stellar CLI 28, fresh funded account) | ✅ all 3 contracts deployed + initialized; `record_payment` live, **replay rejected** (VM trap), `is_payment_used=true`, multisig propose→approve (quorum, fail-closed transfer), escrow balance=0 — evidence in DEPLOYMENT §6.1.1 |
 
 ---
 
@@ -109,19 +110,21 @@ No Prometheus surface existed.
 quote/verify/forward/debt hot paths; a global interceptor records every HTTP
 request. Tested. Grafana dashboard JSON included (`docs/dashboards`).
 
-### F8 — Dependency posture: 0 critical, runtime advisories fixed
+### F8 — Dependency posture: 0 critical, 0 runtime-reachable
 
-`pnpm audit`: **76 advisories (34 high, 36 moderate)** at baseline. Fixed via
-`pnpm-workspace.yaml` overrides (real, installable patched versions):
-`express ≥4.21.2`, `ws ≥8.21.0`, `body-parser ≥1.20.6`, `qs ≥6.16.0`,
+`pnpm audit`: **76 advisories (34 high, 36 moderate)** at baseline. Phase 1
+(overrides in `pnpm-workspace.yaml` — real, installable patched versions):
+`express ≥5.2.1`, `ws ≥8.21.0`, `body-parser ≥1.20.6`, `qs ≥6.16.0`,
 `uuid ≥11.1.1 <12` (12+ is ESM-only — would break the CJS NestJS
 integration), `lodash ≥4.18.1`, `js-yaml ≥4.3.1`, `toml ≥4.2.0`,
-`postcss ≥8.5.23`, `file-type ≥21.3.2`. Result: **54 advisories (0 critical;
-26 high)** — every remaining high is a **major-version track**
-(`next <15` dashboard build, `@nestjs/core 10`, `multer 1.x` — no upload
-endpoints → not exploitable here). `multer 2.x` was tried and reverted
-(ESM-only, breaks the CJS NestJS 10 platform-express integration). Full
-tracks: `MAINNET_READINESS.md` §7.
+`postcss ≥8.5.23`, `file-type ≥21.3.2`, `minimatch ≥9.0.7`,
+`serialize-javascript ≥7.0.5`, `fast-uri ≥3.1.6`, `adm-zip ≥0.6.0`.
+Phase 2 (major upgrades, 2026-09-08): **NestJS 10 → 11.2.3** (Express
+5.2.1; platform-express ≥11.1.28 pins **multer 2.2.0**, lifting the ESM/CJS
+blocker) and **Next 14 → 15.5.25** (React 19, recharts 2.15.4). Result:
+**9 advisories (0 critical, 0 runtime-reachable)** — remaining are
+dev/build-tooling only (`nx` 19, `webpack-dev-server` 4, `image-size` — no
+patched release exists). Tracks: `MAINNET_READINESS.md` §7.
 
 ### F9 — CI security pipeline
 
@@ -149,13 +152,13 @@ pnpm 11 across Docker + CI.
 
 ## 2. Findings that required judgment (left as-is, documented)
 
-| #   | Finding                                                 | Decision                                                                                                                                                                          | Where                                                        |
-| --- | ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| J1  | Next 14 → 15 / NestJS 10 → 11 major upgrades            | Deferred — major-version tracks with ripple risk; dashboard has no auth middleware (bypass class not runtime-reachable); gateway has no upload endpoints (multer not exploitable) | MAINNET_READINESS §7                                         |
-| J2  | Soroban gas/storage benchmarks                          | No Rust toolchain in this environment — **not executed here**; design analysis + reproducible methodology + results ledger written                                                | GAS-OPTIMIZATION.md; CI `contracts` job runs the test matrix |
-| J3  | Rate limiting is IP-only                                | Accepted residual; the confirmed-payment tier cannot be spoofed by headers; single-use enforcement is the backstop                                                                | SECURITY.md residual 2                                       |
-| J4  | Escrow settlement opt-in/experimental (fire-and-forget) | Product decision; disabled for mainnet v1                                                                                                                                         | MAINNET_READINESS §5                                         |
-| J5  | Third-party contract audit                              | **The** mainnet gate — a trust decision, not technical                                                                                                                            | MAINNET_READINESS §1                                         |
+| #   | Finding                                                 | Decision                                                                                                                                                                                                                     | Where                                                                   |
+| --- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| J1  | ~~Next 14 → 15 / NestJS 10 → 11 major upgrades~~        | **DONE 2026-09-08** — NestJS 11.2.3 (Express 5.2.1, multer 2.2.0) + Next 15.5.25 (React 19); all gateway unit/e2e + dashboard build green                                                                                    | resolved; remainder is the nx 22 toolchain track (MAINNET_READINESS §7) |
+| J2  | ~~Soroban gas/storage benchmarks~~                      | **DONE 2026-09-08** — Rust toolchain installed (1.98.1), `src/bench.rs` per contract measures fee/entries at 1→1k/10k history and asserts the O(1) gate; results ledger in GAS-OPTIMIZATION §5.5; WASM size gate added to CI | GAS-OPTIMIZATION.md §5.5; CI `contracts` job (benches + size gate)      |
+| J3  | Rate limiting is IP-only                                | Accepted residual; the confirmed-payment tier cannot be spoofed by headers; single-use enforcement is the backstop                                                                                                           | SECURITY.md residual 2                                                  |
+| J4  | Escrow settlement opt-in/experimental (fire-and-forget) | Product decision; disabled for mainnet v1                                                                                                                                                                                    | MAINNET_READINESS §5                                                    |
+| J5  | Third-party contract audit                              | **The** mainnet gate — a trust decision, not technical                                                                                                                                                                       | MAINNET_READINESS §1                                                    |
 
 ---
 

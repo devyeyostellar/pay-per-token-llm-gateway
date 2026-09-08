@@ -214,13 +214,24 @@ gate, distinct from the README's generic production checklist.
 
 ## 7. Dependency upgrade tracks (remaining advisories)
 
-Not overridable without major-version upgrades; each is a tracked item:
+**Completed 2026-09-08** — the three previously tracked runtime residuals are
+resolved by major-version upgrades (verified: gateway unit + e2e suites and
+dashboard build all green on the new stacks):
 
-| Package                             | Severity                    | Why not overridden                                                                                                                                             | Track                                         |
-| ----------------------------------- | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
-| `next` (dashboard build)            | high (patched ≥15.5.21)     | Next 14 → 15 is a major upgrade (React 19 peer, App Router changes); dashboard has no auth middleware, so the middleware-bypass class is not runtime-reachable | Next 15 upgrade before mainnet dashboard      |
-| `@nestjs/core` / platform 10        | moderate (patched ≥11.1.18) | NestJS 10 → 11 major; would ripple across all gateway modules                                                                                                  | NestJS 11 upgrade track                       |
-| `multer` 1.x (via platform-express) | high                        | 2.x is ESM-only and breaks the CJS NestJS 10 integration; gateway exposes **no file-upload endpoints** → not exploitable in this deployment                    | resolved automatically by the NestJS 11 track |
+| Package                           | Before                    | After                                           | Notes                                                                              |
+| --------------------------------- | ------------------------- | ----------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `next` (dashboard)                | 14.2 (high, <15.5.21)     | **15.5.25** + React 19 / recharts 2.15          | dashboard has no auth middleware, so the middleware-bypass class never applied     |
+| `@nestjs/core` / platform-express | 10.3 (moderate, <11.1.18) | **11.2.3** on Express 5.2.1                     | Express 5: no wildcard routes or `req.query` mutation in gateway → clean migration |
+| `multer` (via platform-express)   | 1.4.x (high, <2.2.0)      | **2.2.0** (pinned by platform-express 11.1.28+) | gateway exposes no file-upload endpoints; ESM/CJS constraint lifted by NestJS 11   |
+
+**Remaining (2026-09-08)** — all dev/build-tooling only, never shipped to
+runtime, no runtime-reachable path:
+
+| Package              | Severity | Why not fixed                                                                                                            | Track                                      |
+| -------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------ |
+| `nx` 19.5.7          | moderate | fix requires nx ≥22.7.2 (major); pinned with webpack-dev-server 4.x via `@nx/webpack`                                    | nx 22 migration before next toolchain bump |
+| `webpack-dev-server` | moderate | 4.15.2 pinned by `@nx/webpack@19`; fix needs 5.x (major) which `@nx/webpack` 19 does not support                         | resolved by the nx 22 track                |
+| `image-size`         | high     | **no patched version exists** (patched: null); dev-only transitive of `less@4.1.3` (CSS compilation in nx webpack chain) | drop `less`/nx-webpack when migrating      |
 
 ## 8. References
 

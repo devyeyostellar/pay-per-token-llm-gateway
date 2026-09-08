@@ -97,12 +97,13 @@ payment.
 | SBOM (CycloneDX, per release)             | anchore sbom-action       | release asset                                                       |
 | Install-script allowlist                  | pnpm `allowBuilds`        | only prisma/esbuild/nx/@nestjs-core/@parcel-watcher may run scripts |
 
-Dependency posture (2026-09-08): **0 critical** advisories. All
-runtime-reachable advisories in the gateway dependency tree (express, ws,
-body-parser, qs, uuid, lodash, js-yaml, toml, postcss, file-type) are fixed
-via overrides in `pnpm-workspace.yaml`. Remaining highs are **major-version
-tracks** (next < 15, @nestjs/core 10, multer 1.x — no upload endpoints, so
-not exploitable in this deployment) — see Known Residual Risks.
+Dependency posture (2026-09-08): **0 critical** and **0 runtime-reachable**
+advisories. The gateway runs **NestJS 11.2.3 on Express 5.2.1** (with multer
+2.2.0 pinned by platform-express) and the dashboard runs **Next 15.5.25 +
+React 19** — the three previously-tracked major-version residuals are
+resolved. All remaining advisories are dev/build-tooling only (nx,
+webpack-dev-server, image-size) with no runtime-reachable path — see
+`MAINNET_READINESS.md` §7.
 
 ## Known Residual Risks
 
@@ -118,10 +119,10 @@ mainnet go/no-go path or consciously deferred — see
    implemented. Callers behind a shared NAT can rotate through addresses to
    evade it; single-use payment enforcement (atomic DB claim + Redis +
    on-chain replay guards) is the stronger backstop.
-3. **Major-version dependency tracks:** `next < 15.5.21` (dashboard build
-   toolchain), `@nestjs/core 10` (moderate), and `multer 1.x` (high, but the
-   gateway exposes no file-upload endpoints so it is not exploitable here).
-   Fixed by the Next 15 and NestJS 11 upgrade tracks.
+3. **Dev/build-tooling advisories remain** (`nx` 19, `webpack-dev-server` 4,
+   `image-size` — the last has no patched release). All are build-time only,
+   never shipped to runtime, with no runtime-reachable path. Tracked in
+   `MAINNET_READINESS.md` §7 (nx 22 migration).
 4. **Per-entry persistent storage TTLs.** Soroban records each carry their
    own TTL, refreshed on write. An entry untouched for ~1M ledgers after its
    last write may require a paid restore-from-archive read to be read again.
