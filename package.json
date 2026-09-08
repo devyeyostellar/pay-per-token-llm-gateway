@@ -75,17 +75,5 @@
     "*.{json,md,css,yaml,yml}": [
       "prettier --write"
     ]
-  },
-  "pnpm": {
-    "overrides": {
-      "koa": ">=2.15.4"
-    },
-    "onlyBuiltDependencies": [
-      "@nestjs/core",
-      "@prisma/client",
-      "@prisma/engines",
-      "nx",
-      "prisma"
-    ]
   }
 }

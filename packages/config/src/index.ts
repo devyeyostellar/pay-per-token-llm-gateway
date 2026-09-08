@@ -81,6 +81,10 @@ export interface GatewayConfig {
     sorobanRpcUrl: string;
     /** Network passphrase */
     networkPassphrase: string;
+    /** Per-request Horizon timeout (ms) */
+    horizonTimeoutMs: number;
+    /** Per-request Soroban RPC timeout (ms) */
+    sorobanRpcTimeoutMs: number;
   };
 
   /** Database */
@@ -432,6 +436,8 @@ export function loadConfig(): GatewayConfig {
       horizonUrl: process.env.HORIZON_URL || networkConfigs[network].horizon,
       sorobanRpcUrl: process.env.SOROBAN_RPC_URL || networkConfigs[network].rpc,
       networkPassphrase: networkConfigs[network].passphrase,
+      horizonTimeoutMs: parseInt(process.env.HORIZON_TIMEOUT_MS || '10000', 10),
+      sorobanRpcTimeoutMs: parseInt(process.env.SOROBAN_RPC_TIMEOUT_MS || '10000', 10),
     },
 
     database: {

@@ -10,6 +10,7 @@ import {
 import { getConfig } from '@x402/config';
 import { logger } from '@x402/logger';
 import { isPaymentUsedOnChain, recordPaymentOnChain } from './contract-client';
+import { MetricsService } from '../../common/metrics.service';
 import type { Quote, PaymentVerification, PaymentReceipt, RouteConfig } from '@x402/types';
 import type { PrismaClient } from '@x402/database';
 
@@ -20,6 +21,7 @@ export class X402Service {
   constructor(
     @Inject('PRISMA') private readonly prisma: PrismaClient,
     @Inject('REDIS') redisClient: RedisLike,
+    private readonly metrics: MetricsService,
   ) {
     this.replayProtection = new ReplayProtection(redisClient);
   }
@@ -49,6 +51,9 @@ export class X402Service {
       estimatedTokens,
     });
 
+    this.metrics.safe(() =>
+      this.metrics.quotesGenerated.inc({ pricing_model: quote.pricingModel }),
+    );
     logger.info('Quote generated', { quoteId: quote.id, route: route.path, providerAddress });
 
     return quote;
@@ -97,6 +102,7 @@ export class X402Service {
       config.contracts.paymentVerifier,
       txHash,
       config.stellar.sorobanRpcUrl,
+      config.stellar.sorobanRpcTimeoutMs,
     );
     if (contractUsed) {
       // Extend the Redis claim so we don't query the contract again
@@ -121,6 +127,7 @@ export class X402Service {
       sorobanRpcUrl: config.stellar.sorobanRpcUrl,
       networkPassphrase: config.stellar.networkPassphrase,
       minPaymentAmount: config.payment.minPaymentAmount,
+      timeoutMs: config.stellar.horizonTimeoutMs,
       // Mainnet verifies direct USDC `payment` operations only. Path
       // payments (strict send/receive) are accepted on test networks where
       // they help clients without a USDC trustline, but on mainnet they widen
@@ -130,6 +137,8 @@ export class X402Service {
     });
 
     if (verification.verified) {
+      this.metrics.safe(() => this.metrics.paymentsVerified.inc({ asset: verification.asset }));
+
       // Best-effort on-chain audit trail: record the verified payment on the
       // payment-verifier contract so replay protection and the immutable
       // audit trail survive Redis loss and work across gateway instances.
@@ -138,6 +147,7 @@ export class X402Service {
           contractId: config.contracts.paymentVerifier,
           rpcUrl: config.stellar.sorobanRpcUrl,
           networkPassphrase: config.stellar.networkPassphrase,
+          timeoutSeconds: Math.ceil(config.stellar.sorobanRpcTimeoutMs / 1000),
           adminSecret: config.payment.contractAdminSecret,
           txHash,
           payer: verification.payerAddress,
@@ -148,6 +158,12 @@ export class X402Service {
           quoteId: quote.id,
         });
       }
+    } else {
+      this.metrics.safe(() =>
+        this.metrics.paymentVerificationFailed.inc({
+          reason: (verification.failureReason || 'unknown').slice(0, 64),
+        }),
+      );
     }
 
     return verification;

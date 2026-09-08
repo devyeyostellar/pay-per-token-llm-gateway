@@ -3,7 +3,7 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-RUN corepack enable && corepack prepare pnpm@9 --activate
+RUN corepack enable && corepack prepare pnpm@11 --activate
 
 # Copy root workspace files needed for pnpm install
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml nx.json tsconfig.base.json ./
@@ -34,6 +34,11 @@ RUN pnpm exec nx build dashboard
 # ── Production Stage ──
 FROM node:20-alpine
 
+LABEL org.opencontainers.image.title="x402 Provider Dashboard" \
+      org.opencontainers.image.description="Provider dashboard for the x402 LLM gateway" \
+      org.opencontainers.image.source="https://github.com/mallonepay/pay-per-token-llm-gateway" \
+      org.opencontainers.image.licenses="MIT"
+
 WORKDIR /app
 
 ENV NODE_ENV=production
@@ -47,6 +52,12 @@ COPY --from=builder /app/dist/apps/dashboard/.next/static /app/.next/static
 # Copy public assets (favicon, logo, etc.)
 COPY --from=builder /app/dist/apps/dashboard/public /app/public
 
+# Run as an unprivileged user.
+USER node
+
 EXPOSE 3001
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD wget -q -O /dev/null http://127.0.0.1:3001/ || exit 1
 
 CMD ["node", "server.js"]

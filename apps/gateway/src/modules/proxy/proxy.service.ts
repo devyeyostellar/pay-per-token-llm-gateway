@@ -7,6 +7,7 @@ import { retry, NonRetryableError } from '@x402/shared';
 import type { Redis } from 'ioredis';
 import { isPublicIp } from '../webhooks/webhooks.service';
 import { lookup } from 'dns/promises';
+import { MetricsService } from '../../common/metrics.service';
 
 // ── DNS Rebinding Protection ─────────────────
 
@@ -73,8 +74,14 @@ class CircuitBreaker {
     redis: Redis | null,
     private readonly failureThreshold = 5,
     private readonly cooldownMs = 30_000,
+    private readonly metrics?: MetricsService,
   ) {
     this.redis = redis;
+  }
+
+  private recordOpened(hostname: string): void {
+    const metrics = this.metrics;
+    if (metrics) metrics.safe(() => metrics.circuitBreakerOpens.inc({ hostname }));
   }
 
   async checkCircuit(upstreamUrl: string): Promise<void> {
@@ -208,6 +215,7 @@ class CircuitBreaker {
       )) as string;
 
       if (result === 'open') {
+        this.recordOpened(hostname);
         logger.error('Circuit breaker opened (Redis)', {
           hostname,
           failures: this.failureThreshold,
@@ -255,6 +263,7 @@ class CircuitBreaker {
 
     if (circuit.failures >= this.failureThreshold) {
       circuit.open = true;
+      this.recordOpened(hostname);
       logger.error('Circuit breaker opened', {
         upstreamUrl: hostname,
         failures: circuit.failures,
@@ -272,8 +281,11 @@ class CircuitBreaker {
 export class ProxyService {
   private readonly circuitBreaker: CircuitBreaker;
 
-  constructor(@Inject('REDIS') redis: Redis | null) {
-    this.circuitBreaker = new CircuitBreaker(redis);
+  constructor(
+    @Inject('REDIS') redis: Redis | null,
+    private readonly metrics: MetricsService,
+  ) {
+    this.circuitBreaker = new CircuitBreaker(redis, 5, 30_000, metrics);
   }
 
   /**
@@ -331,6 +343,7 @@ export class ProxyService {
           maxAttempts: config.llm.maxRetries,
           baseDelayMs: 1000,
           onRetry: (attempt, error) => {
+            this.metrics.safe(() => this.metrics.upstreamRetries.inc({ hostname: upstreamHost }));
             logger.warn(`Retrying upstream call (attempt ${attempt})`, { error: error.message });
           },
         },
@@ -349,6 +362,7 @@ export class ProxyService {
 
       return { response: data, responseTime };
     } catch (error) {
+      this.metrics.safe(() => this.metrics.upstreamFailures.inc({ hostname: upstreamHost }));
       await this.circuitBreaker.recordFailure(upstreamUrl);
       throw error;
     }
@@ -466,8 +480,35 @@ export class ProxyService {
         const { done, value } = await reader.read();
         if (done) break;
 
-        // Forward raw bytes to the client immediately
-        res.write(value);
+        // Forward raw bytes to the client immediately, honoring backpressure.
+        // Without this, a slow consumer would make the gateway buffer the
+        // entire upstream stream in memory. Node's `res.write` returns false
+        // exactly when the socket buffer is full — wait for 'drain' (or the
+        // client closing) before reading more. A non-boolean result (e.g. a
+        // mock) means the write was accepted and we keep streaming.
+        if (res.write(value) === false) {
+          await new Promise<void>((resolve) => {
+            const cleanup = () => {
+              res.removeListener('drain', onDrain);
+              res.removeListener('close', onClose);
+            };
+            const onDrain = () => {
+              cleanup();
+              resolve();
+            };
+            const onClose = () => {
+              cleanup();
+              resolve();
+            };
+            if (typeof res.once === 'function') {
+              res.once('drain', onDrain);
+              res.once('close', onClose);
+            } else {
+              // Minimal emitter (test doubles): don't block the stream.
+              setImmediate(onDrain);
+            }
+          });
+        }
 
         // Parse individual SSE lines to extract usage from the last valid chunk
         lineBuffer += decoder.decode(value, { stream: true });

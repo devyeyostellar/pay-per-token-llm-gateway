@@ -1,3 +1,52 @@
 packages:
   - 'apps/*'
   - 'packages/*'
+
+# pnpm v11 no longer reads the `pnpm` field in package.json — all settings
+# live here. `allowBuilds` replaces the legacy `onlyBuiltDependencies` /
+# `neverBuiltDependencies` keys (boolean: true = run the package's install
+# scripts, false = skip). These are exactly the packages the workspace needs
+# to run postinstall scripts (Prisma engine download, esbuild binary, Nx
+# native binaries, husky via the root prepare script).
+allowBuilds:
+  '@nestjs/core': true
+  '@parcel/watcher': true
+  '@prisma/client': true
+  '@prisma/engines': true
+  esbuild: true
+  nx: true
+  prisma: true
+
+# Dependency overrides previously lived in the package.json `pnpm` field,
+# which pnpm v11 ignores. Each override here fixes a known advisory in a
+# transitive runtime dependency with a real, installable patched version:
+#   - koa:      RCE/SSRF CVEs fixed in 2.15.4 (NestJS dev tooling transitive)
+#   - express:  path-to-regexp ReDoS (CVE-2024-45296) + send/qs advisories,
+#               fixed in express 4.21.x — Express itself is a gateway runtime
+#               dependency (via @nestjs/platform-express)
+#   - ws:       Sec-WebSocket-Protocol ReDoS (CVE-2025-29981), fixed in
+#               8.21.0 — ws is a runtime dependency via socket.io
+#   - body-parser: invalid-limit DoS (GHSA-v422-hmwv-36x6), fixed in 1.20.6
+#
+# Runtime-reachable transitive advisories with installable patched releases.
+# @nestjs/core (<11.1.18, moderate) and next (<15.5.21, dashboard build) are
+# NOT overridable without major-version upgrades (NestJS 11 / Next 15); they
+# are tracked as mainnet gates in MAINNET_READINESS.md.
+overrides:
+  koa: '>=2.15.4'
+  express: '>=4.21.2'
+  ws: '>=8.21.0'
+  body-parser: '>=1.20.6'
+  qs: '>=6.16.0'
+  # uuid <12 keeps the CommonJS build (12+ is ESM-only and would break the
+  # CJS NestJS integration); 11.1.1 is the advisory's patched floor.
+  uuid: '>=11.1.1 <12'
+  lodash: '>=4.18.1'
+  js-yaml: '>=4.3.1'
+  toml: '>=4.2.0'
+  postcss: '>=8.5.23'
+  file-type: '>=21.3.2'
+  # multer intentionally NOT overridden: 2.x is ESM-only and would break the
+  # CommonJS NestJS 10 platform-express integration. The gateway has no file
+  # upload endpoints, so the multer advisory (DoS via crafted multipart) is
+  # not exploitable in this deployment — tracked as a NestJS 11 upgrade item.

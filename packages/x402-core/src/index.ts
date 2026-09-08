@@ -45,7 +45,8 @@ export const DEFAULT_TOKEN_ESTIMATE = 4096;
  * provided — a route with zero or near-zero pricing cannot grant free access.
  */
 export function generateQuote(options: QuoteGeneratorOptions): Quote {
-  const expiresAt = nowUnix() + options.quoteExpirySeconds;
+  const issuedAt = nowUnix();
+  const expiresAt = issuedAt + options.quoteExpirySeconds;
   const quoteId = generateId();
   const asset: PaymentAsset = options.route.acceptedAssets[0] || 'USDC';
 
@@ -87,6 +88,7 @@ export function generateQuote(options: QuoteGeneratorOptions): Quote {
     paymentAddress: options.providerAddress,
     memo,
     network: options.network,
+    issuedAt,
     expiresAt,
     statusUrl: `${options.gatewayBaseUrl}/api/v1/payments/${quoteId}/status`,
     estimatedMaxTokens,
@@ -155,6 +157,12 @@ export interface VerifyPaymentOptions {
    * existing behavior is preserved when unset.
    */
   allowPathPayments?: boolean;
+  /**
+   * Per-request timeout for Horizon fetches (ms). Without one, a hung or
+   * slow Horizon endpoint would hold request handlers open indefinitely.
+   * Defaults to 10_000.
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -172,9 +180,14 @@ export async function verifyStellarPayment(
 
   logger.info('Verifying payment', { txHash, quoteId: quote.id });
 
+  const timeoutMs = options.timeoutMs ?? 10_000;
+
   try {
-    // Fetch transaction from Horizon
-    const response = await fetch(`${horizonUrl}/transactions/${txHash}`);
+    // Fetch transaction from Horizon. A hard timeout is mandatory: the
+    // gateway must never hold a request handler open on a hung Horizon.
+    const response = await fetch(`${horizonUrl}/transactions/${txHash}`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
     if (!response.ok) {
       if (response.status === 404) {
         return {
@@ -215,7 +228,9 @@ export async function verifyStellarPayment(
     }
 
     // Fetch payment operations
-    const opsResponse = await fetch(`${horizonUrl}/transactions/${txHash}/operations`);
+    const opsResponse = await fetch(`${horizonUrl}/transactions/${txHash}/operations`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
     if (!opsResponse.ok) {
       throw new Error(`Horizon operations error: ${opsResponse.status}`);
     }
@@ -368,9 +383,34 @@ export async function verifyStellarPayment(
       };
     }
 
-    // Verify quote hasn't expired
+    // Verify the payment falls inside the quote's validity window.
+    //
+    // Both bounds matter:
+    //  - `txTime > expiresAt`: a payment made after the quote expired is
+    //    rejected (the quote window is a security boundary).
+    //  - `txTime < issuedAt`: a payment made BEFORE the quote was issued
+    //    must also be rejected. Without this lower bound, any historical
+    //    payment to the provider's address (public on Horizon, amount
+    //    visible) could be presented against a freshly issued quote for
+    //    one free access — the DB/Redis single-use guards only prevent
+    //    re-using the same hash, not first-time use of an old one. The
+    //    `issuedAt` guard is skipped defensively when the quote predates
+    //    this hardening (no `issuedAt` field stored) so in-flight quotes
+    //    keep working.
     const txTime = Date.parse(txData.created_at) / 1000;
     const amountStroops = unitsToStroops(matchingPayment.amount);
+    if (quote.issuedAt && txTime < quote.issuedAt) {
+      return {
+        verified: false,
+        txHash,
+        payerAddress: matchingPayment.from || txData.source_account,
+        amount: amountStroops,
+        asset: quote.asset,
+        ledger: txData.ledger || 0,
+        timestamp: txTime,
+        failureReason: 'Payment was made before the quote was issued',
+      };
+    }
     if (txTime > quote.expiresAt) {
       return {
         verified: false,

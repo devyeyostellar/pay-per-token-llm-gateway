@@ -52,6 +52,24 @@ describe('generateQuote', () => {
     expect(quote.statusUrl).toContain('/api/v1/payments/');
   });
 
+  it('sets issuedAt and derives expiresAt from the quote window', () => {
+    const route = makeRoute();
+    const quote = generateQuote({
+      route,
+      providerAddress: 'GA5ZSE6VKPVFLEXMWJQBGHE4FJHKQIFSJMLQ7H4VFQB4UHLEH5IOVK3F',
+      gatewayBaseUrl: 'http://localhost:3000',
+      network: 'testnet',
+      quoteExpirySeconds: 300,
+      usdcIssuer: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
+    });
+
+    // The quote window integrity check in verifyStellarPayment depends on
+    // issuedAt being the moment of issuance and expiresAt = issuedAt + window.
+    expect(quote.issuedAt).toBeDefined();
+    expect(quote.issuedAt).toBeLessThanOrEqual(Date.now() / 1000);
+    expect(quote.expiresAt - quote.issuedAt).toBe(300);
+  });
+
   it('derives a short deterministic memo from the quote id (attribution)', () => {
     const route = makeRoute();
     const quote = generateQuote({

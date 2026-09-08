@@ -39,6 +39,7 @@ function makeQuote(overrides: Partial<Quote> = {}): Quote {
     assetIssuer: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
     paymentAddress: 'GA5ZSE6VKPVFLEXMWJQBGHE4FJHKQIFSJMLQ7H4VFQB4UHLEH5IOVK3F',
     network: 'testnet',
+    issuedAt: Date.now() / 1000,
     expiresAt: Date.now() / 1000 + 300,
     statusUrl: 'http://localhost:3000/api/v1/payments/quote-1/status',
     ...overrides,

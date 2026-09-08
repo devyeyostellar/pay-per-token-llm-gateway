@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 env:
-  PNPM_VERSION: '9'
+  PNPM_VERSION: '11'
 
 jobs:
   lint:
@@ -255,7 +255,7 @@ jobs:
           pnpm exec next build
 
   security:
-    name: Security Scan
+    name: Dependency Audit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -274,4 +274,68 @@ jobs:
           cache: 'pnpm'
 
       - run: pnpm install --frozen-lockfile
+      # Fail the build on any critical advisory. Highs are documented
+      # (next <15, multer <2 ESM, @nestjs/core <11) and tracked as mainnet
+      # gates in MAINNET_READINESS.md; the reachable runtime advisories in
+      # the gateway tree (express, ws, body-parser, qs, …) are fixed via
+      # overrides in pnpm-workspace.yaml.
       - run: pnpm audit --audit-level=critical
+      - name: Report full advisory summary (non-blocking)
+        run: pnpm audit --audit-level=high || true
+
+  gitleaks:
+    name: Secret Scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Scans the full commit history for leaked secrets (API keys, private
+      # keys, Stellar secrets) and fails the build when one is found.
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  trivy:
+    name: Vulnerability Scan (trivy)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write # for SARIF upload to the Security tab
+    steps:
+      - uses: actions/checkout@v4
+
+      # Filesystem scan (lockfiles + manifests + source). Report-only for
+      # now: known highs (next/multer/@nestjs/core) are documented upgrade
+      # tracks, and the hard gate is the `security` job's critical-level
+      # pnpm audit. Findings land in the GitHub Security tab via SARIF.
+      - name: Run Trivy (fs)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+          exit-code: '0'
+          skip-dirs: node_modules,dist,.next,coverage,.git
+
+      - name: Upload Trivy results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+
+  osv-scanner:
+    name: Dependency Scan (osv-scanner)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Scans all lockfiles (pnpm-lock.yaml, contracts Cargo.lock) against
+      # the OSV database. Report-only — see the `security` job for the gate.
+      - name: Run OSV scanner
+        uses: google/osv-scanner-action/osv-scanner-action@v1
+        with:
+          fail-on-vuln: false

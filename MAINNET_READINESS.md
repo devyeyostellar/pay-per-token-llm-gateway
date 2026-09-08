@@ -7,19 +7,19 @@
 > _any_ service well; this one is about the Stellar/chain-specific risks that
 > determine whether real USDC can flow through the system safely.
 >
-> Last updated: **2026-09-04** · Applies to commit `c769a99`.
+> Last updated: **2026-09-08** (post audit-and-hardening pass) · Applies to
+> commit `bf2bdd8` + the 2026-09-08 hardening commit.
 
 ---
 
-## 1. Audit status
+## 1. Audit status| Item | Status |
 
-| Item                             | Status                                                                                                                                                                                                                         |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Third-party smart-contract audit | **Not completed.** No external audit firm has reviewed the Soroban contracts or the gateway.                                                                                                                                   |
-| Self-audit                       | `AUDIT.md` (generated 2026-08-11) is an automated self-audit. Findings it raised that were actionable have since been fixed and are reflected in this repo (see §6).                                                           |
-| Test coverage (contracts)        | payment-verifier **23** · credit-escrow **43** · multisig **32** unit tests, all passing under `cargo test` (Rust 1.98 / soroban-sdk 22). Hand-written edge cases only — no property/fuzz/invariant suite, no external review. |
-| Test coverage (gateway)          | Unit suites green with coverage; gateway e2e 33/33.                                                                                                                                                                            |
-| Disclosure policy                | `SECURITY.md` exists but discloses **no known risks or out-of-scope items** — it reads as aspirational. It should be updated to name real residual risks (this doc is a starting point).                                       |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Third-party smart-contract audit | **Not completed.** No external audit firm has reviewed the Soroban contracts or the gateway. |
+| Self-audit | `AUDIT.md` (2026-08-11) + a fresh audit-and-hardening pass on **2026-09-08**: quote-window integrity (`issuedAt`), Horizon/Soroban fetch timeouts, request-size bounds, readiness endpoints, Prometheus metrics, dependency overrides (0 critical), CI secret/container/lockfile scans, non-root Docker images, streaming backpressure. |
+| Test coverage (contracts) | payment-verifier **23** · credit-escrow **43** · multisig **32** unit tests under `cargo test`. Hand-written edge cases only — no property/fuzz/invariant suite, no external review, no executed gas benchmark (methodology in `GAS-OPTIMIZATION.md`). |
+| Test coverage (gateway) | Unit suites green with coverage gates (gateway 127 unit + 34 e2e; x402-core 66 incl. deterministic property-based tests; validation 25; sdk 15). |
+| Disclosure policy | `SECURITY.md` now lists concrete residual risks (§"Known Residual Risks") and the CI scanning pipeline. |
 
 **Go/no-go implication:** a mainnet launch with real USDC before an
 independent audit of the three contracts is a _trust decision_, not a
@@ -146,16 +146,20 @@ reserves and alert on admin-key balance.
 These come from the self-audit and the Phase 2 hardening work; each is either
 done or an explicit decision point:
 
-| Item                                                                                           | Status                                                                                                                                                                                                                                                                             |
-| ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AUTH_DEV_MODE=true` + `NODE_ENV=production` boot refusal                                      | ✅ Done (`packages/config` guard + tests). The old any-wallet `dev-sig-` bypass can no longer reach production.                                                                                                                                                                    |
-| Per-token underpayment enforcement (deposit + outstanding-debt top-up gate, completion cap)    | ✅ Done. New `UnderpaymentDebt` Prisma model — **requires `pnpm db:push`** (repo has no migration files) before the debt-gate queries run against a real DB.                                                                                                                       |
-| Soroban contracts migrated to **persistent storage** (per-entry ledger entries, per-entry TTL) | ✅ Done, commit `c769a99`. **This changed the storage layout — mainnet MUST deploy the new WASM.** There is no mainnet state, so this is a clean redeploy, not a migration.                                                                                                        |
-| Per-entry TTL policy                                                                           | ⚠️ Deliberate tradeoff: an untouched record needs a paid restore-from-archive read after `LEDGERS_TO_LIVE` ledgers. Fine for an audit trail; document for operators.                                                                                                               |
-| Credit-escrow settlement                                                                       | ⚠️ Opt-in, **experimental**, fire-and-forget (no enforcement without the account model). Keep disabled for mainnet v1 or make it a product decision (open issue #25).                                                                                                              |
-| Email notifications (SMTP)                                                                     | ✅ Removed — the handler was never registered, its SMTP config was inert, and no recipient model existed. `EmailNotificationHandler`, the `EMAIL_*`/`SMTP_*` config, and the nodemailer dependency were deleted. Re-add with a proper per-recipient model if email is ever wanted. |
-| Rate limiting                                                                                  | IP-only today (self-audit M7). The README/SECURITY claim of "by IP or wallet" overstates it. Acceptable for v1 with documented limits, or add wallet-based limiting.                                                                                                               |
-| External audit                                                                                 | ❌ Not done (see §1).                                                                                                                                                                                                                                                              |
+| Item                                                                                           | Status                                                                                                                                                                                                                                                                                                                                      |
+| ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AUTH_DEV_MODE=true` + `NODE_ENV=production` boot refusal                                      | ✅ Done (`packages/config` guard + tests). The old any-wallet `dev-sig-` bypass can no longer reach production.                                                                                                                                                                                                                             |
+| Per-token underpayment enforcement (deposit + outstanding-debt top-up gate, completion cap)    | ✅ Done. New `UnderpaymentDebt` Prisma model — **requires `pnpm db:push`** (repo has no migration files) before the debt-gate queries run against a real DB.                                                                                                                                                                                |
+| Soroban contracts migrated to **persistent storage** (per-entry ledger entries, per-entry TTL) | ✅ Done, commit `c769a99`. **This changed the storage layout — mainnet MUST deploy the new WASM.** There is no mainnet state, so this is a clean redeploy, not a migration.                                                                                                                                                                 |
+| Per-entry TTL policy                                                                           | ⚠️ Deliberate tradeoff: an untouched record needs a paid restore-from-archive read after `LEDGERS_TO_LIVE` ledgers. Fine for an audit trail; document for operators.                                                                                                                                                                        |
+| Credit-escrow settlement                                                                       | ⚠️ Opt-in, **experimental**, fire-and-forget (no enforcement without the account model). Keep disabled for mainnet v1 or make it a product decision (open issue #25).                                                                                                                                                                       |
+| Email notifications (SMTP)                                                                     | ✅ Removed — the handler was never registered, its SMTP config was inert, and no recipient model existed. `EmailNotificationHandler`, the `EMAIL_*`/`SMTP_*` config, and the nodemailer dependency were deleted. Re-add with a proper per-recipient model if email is ever wanted.                                                          |
+| Rate limiting                                                                                  | IP-only today (self-audit M7). The README/SECURITY claim of "by IP or wallet" overstates it. Acceptable for v1 with documented limits, or add wallet-based limiting.                                                                                                                                                                        |
+| External audit                                                                                 | ❌ Not done (see §1).                                                                                                                                                                                                                                                                                                                       |
+| Payment verification window (historical-hash reuse)                                            | ✅ **Fixed 2026-09-08** — quotes now carry `issuedAt`; payments dated before issuance are rejected (lower-bound window), closing the "old payment + fresh quote = one free access" gap. Tested.                                                                                                                                             |
+| Timeouts on Horizon/Soroban fetches                                                            | ✅ **Fixed 2026-09-08** — `HORIZON_TIMEOUT_MS` / `SOROBAN_RPC_TIMEOUT_MS` (default 10 s) via `AbortSignal.timeout`; server `requestTimeout`/`headersTimeout` caps. Tested.                                                                                                                                                                  |
+| Request-size / memory bounds                                                                   | ✅ **Fixed 2026-09-08** — ≤128 messages, ≤64 KiB content, `max_tokens` ≤ 1M (zod) on top of the 1 MB body cap; streaming honors backpressure. Tested.                                                                                                                                                                                       |
+| Dependency posture (supply chain)                                                              | ✅ **Improved 2026-09-08** — **0 critical** advisories; reachable runtime advisories in the gateway tree fixed via overrides (express, ws, body-parser, qs, uuid, lodash, js-yaml, toml, postcss, file-type). Remaining highs = major-version tracks (§7). CI: gitleaks + trivy + osv-scanner + SBOM per release; install-script allowlist. |
 
 ---
 
@@ -208,7 +212,17 @@ gate, distinct from the README's generic production checklist.
 
 ---
 
-## 7. References
+## 7. Dependency upgrade tracks (remaining advisories)
+
+Not overridable without major-version upgrades; each is a tracked item:
+
+| Package                             | Severity                    | Why not overridden                                                                                                                                             | Track                                         |
+| ----------------------------------- | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| `next` (dashboard build)            | high (patched ≥15.5.21)     | Next 14 → 15 is a major upgrade (React 19 peer, App Router changes); dashboard has no auth middleware, so the middleware-bypass class is not runtime-reachable | Next 15 upgrade before mainnet dashboard      |
+| `@nestjs/core` / platform 10        | moderate (patched ≥11.1.18) | NestJS 10 → 11 major; would ripple across all gateway modules                                                                                                  | NestJS 11 upgrade track                       |
+| `multer` 1.x (via platform-express) | high                        | 2.x is ESM-only and breaks the CJS NestJS 10 integration; gateway exposes **no file-upload endpoints** → not exploitable in this deployment                    | resolved automatically by the NestJS 11 track |
+
+## 8. References
 
 - `README.md` — Production Checklist (generic infra) and Trust Model
 - `AUDIT.md` — automated self-audit findings (2026-08-11)
@@ -216,4 +230,6 @@ gate, distinct from the README's generic production checklist.
 - `.env.mainnet.example` — mainnet environment template (Circle USDC issuer
   already set)
 - `scripts/deploy-contracts.sh` — network-aware deploy + address persistence
-- `DEPLOYMENT.md` — full deployment walkthrough
+- `DEPLOYMENT.md` — full deployment walkthrough (+ testnet verification journey)
+- `GAS-OPTIMIZATION.md` — storage/gas design + benchmarking methodology
+- `THREAT-MODEL.md` / `OPERATIONS.md` / `OBSERVABILITY.md` — threats, DR/RTO-RPO, dashboards

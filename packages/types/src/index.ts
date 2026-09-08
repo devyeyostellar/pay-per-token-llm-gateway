@@ -48,6 +48,8 @@ export interface Quote {
   paymentAddress: StellarAddress;
   /** Memo required for the payment (if any) */
   memo?: string;
+  /** Unix timestamp when this quote was issued */
+  issuedAt: number;
   /** Unix timestamp when this quote expires */
   expiresAt: number;
   /** Chain ID / network passphrase */

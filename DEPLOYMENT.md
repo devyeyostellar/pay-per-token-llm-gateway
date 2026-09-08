@@ -46,6 +46,8 @@ Go to [railway.app](https://railway.app) and sign up with GitHub.
 | `CORS_ORIGINS`                      | `https://your-dashboard.vercel.app`                        |
 | `UPSTREAM_API_KEY_YOUR_PROVIDER_ID` | `sk-your-openai-api-key`                                   |
 | `PORT`                              | `3000`                                                     |
+| `HORIZON_TIMEOUT_MS`                | `10000` (optional, per-request Horizon timeout)            |
+| `SOROBAN_RPC_TIMEOUT_MS`            | `10000` (optional, per-request Soroban RPC timeout)        |
 
 3. Under **Settings** → **Build**, set:
    - **Dockerfile path**: `infrastructure/docker/Dockerfile.gateway`
@@ -325,6 +327,58 @@ then set the gateway service variables:
 - [ ] Secrets rotated, `.env.mainnet.example` never committed with values
 
 ---
+
+## Part 6: Testnet verification journey & operations
+
+### 6.1 Verifying the complete user journey on Stellar Testnet
+
+Run this exact sequence against a testnet deployment (this is what the
+automated e2e suite — `apps/gateway/src/e2e/x402-flow.e2e-spec.ts` — mocks;
+the steps below exercise the live chain):
+
+```bash
+# 1. Liveness + readiness (dependencies up)
+curl -s https://gateway/health && curl -s https://gateway/health/ready | jq .checks
+
+# 2. Metrics endpoint is scrapeable
+curl -s https://gateway/metrics | grep -E "x402_(quotes|payments)"
+
+# 3. Unpaid request → 402 with a quote (capture quote.amount / quote.id)
+curl -s -X POST https://gateway/api/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}'
+
+# 4. Pay the quoted amount from a funded testnet wallet to quote.paymentAddress
+#    (USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5), then:
+curl -s -X POST https://gateway/api/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "X-Payment-Hash: <tx_hash>" \
+  -d '{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}'
+# → 200 with LLM response + X-Payment-Receipt header
+
+# 5. Replay the SAME hash → expect 402 "This payment has already been used"
+
+# 6. SDK smoke test (auto 402 → pay → retry)
+node -e "
+const { X402Client } = require('@x402/sdk');
+const c = new X402Client({ gatewayUrl: 'https://gateway', secretKey: process.env.SK, network: 'testnet' });
+c.call({ model: 'gpt-4', messages: [{ role: 'user', content: 'hi' }] }).then(r => console.log(r.success ? 'OK ' + r.response.id : 'FAIL ' + r.error));
+"
+```
+
+Negative checks to include in the rehearsal: wrong-issuer payment → 402;
+payment older than the quote (reused historical hash) → 402 _before quote
+issued_; amount below deposit (per-token route) → 402 "below the quoted
+deposit"; expired quote → 402.
+
+### 6.2 Operations
+
+- Health/readiness semantics, RTO/RPO targets, backup/restore and DR
+  runbooks: [`OPERATIONS.md`](./OPERATIONS.md).
+- Dashboards and alert rules: [`OBSERVABILITY.md`](./OBSERVABILITY.md)
+  (+ `docs/dashboards/x402-gateway.json`).
+- Apply Prisma migrations explicitly (`pnpm db:migrate`) — never `db:push`
+  against a database with real traffic without reviewing the diff.
 
 ## Deployed Contract Addresses (Testnet)
 

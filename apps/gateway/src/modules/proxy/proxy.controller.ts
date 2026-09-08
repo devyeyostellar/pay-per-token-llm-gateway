@@ -17,6 +17,7 @@ import { PaymentsService } from '../payments/payments.service';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { AdminService } from '../admin/admin.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
+import { MetricsService } from '../../common/metrics.service';
 import { RateLimitGuard } from '../../common/guards/rate-limit.guard';
 import { chatCompletionRequestSchema, txHashSchema } from '@x402/validation';
 import { calculatePrice, comparePayment, DEFAULT_TOKEN_ESTIMATE } from '@x402/x402-core';
@@ -38,6 +39,7 @@ export class ProxyController {
     private readonly analyticsService: AnalyticsService,
     private readonly adminService: AdminService,
     private readonly webhooksService: WebhooksService,
+    private readonly metrics: MetricsService,
   ) {}
 
   /**
@@ -739,6 +741,7 @@ export class ProxyController {
           payerAddress: payment.payerAddress,
           amount: comparison.surplus.replace('-', ''), // deficit = −surplus
         });
+        this.metrics.safe(() => this.metrics.underpaymentDebtsRecorded.inc());
       }
     }
 

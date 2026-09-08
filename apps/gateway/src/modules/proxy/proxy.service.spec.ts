@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ProxyService } from './proxy.service';
+import { MetricsService } from '../../common/metrics.service';
 import { loadConfig, setConfig } from '@x402/config';
 import type { Response } from 'express';
 
@@ -33,6 +34,7 @@ describe('ProxyService', () => {
         // to the in-memory implementation when null — which is what these
         // tests exercise).
         { provide: 'REDIS', useValue: null },
+        MetricsService,
       ],
     }).compile();
 
