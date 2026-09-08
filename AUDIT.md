@@ -22,7 +22,7 @@ matrix in this session (evidence in §0).
 | Full `nx run-many --target=test --all --coverage`                   | ✅ 6 projects green, coverage gates enforced                                                                                                                                                                                       |
 | Gateway typecheck (`tsc -p apps/gateway/tsconfig.app.json`)         | ✅ 0 errors                                                                                                                                                                                                                        |
 | Lint (`nx run-many --target=lint --all`, 15 projects)               | ✅ 0 errors                                                                                                                                                                                                                        |
-| `pnpm audit`                                                        | ✅ **0 critical, 0 runtime-reachable**; 54 → **9 advisories** after the NestJS 11 / Next 15 major upgrades (see F8)                                                                                                                |
+| `pnpm audit`                                                        | ✅ **0 critical, 0 runtime-reachable**; 54 → **2 high** after the NestJS 11 / Next 15 + nx 22 major upgrades, both `image-size` (no patched release, unused vite/less chain — see F8)                                              |
 | Secret scan (grep for keys/private keys across repo)                | ✅ none found                                                                                                                                                                                                                      |
 | Soroban contracts (`cargo test`)                                    | ✅ **25 / 44 / 33 pass locally** (Rust 1.98.1 + soroban-sdk 22, incl. the new gas/storage benches); WASM sizes 6.6 / 8.5 / 6.9 KiB — see GAS-OPTIMIZATION §5.5                                                                     |
 | Live Stellar Testnet journey (stellar CLI 28, fresh funded account) | ✅ all 3 contracts deployed + initialized; `record_payment` live, **replay rejected** (VM trap), `is_payment_used=true`, multisig propose→approve (quorum, fail-closed transfer), escrow balance=0 — evidence in DEPLOYMENT §6.1.1 |
@@ -122,9 +122,11 @@ integration), `lodash ≥4.18.1`, `js-yaml ≥4.3.1`, `toml ≥4.2.0`,
 Phase 2 (major upgrades, 2026-09-08): **NestJS 10 → 11.2.3** (Express
 5.2.1; platform-express ≥11.1.28 pins **multer 2.2.0**, lifting the ESM/CJS
 blocker) and **Next 14 → 15.5.25** (React 19, recharts 2.15.4). Result:
-**9 advisories (0 critical, 0 runtime-reachable)** — remaining are
-dev/build-tooling only (`nx` 19, `webpack-dev-server` 4, `image-size` — no
-patched release exists). Tracks: `MAINNET_READINESS.md` §7.
+**2 high advisories (0 critical, 0 runtime-reachable)** — remaining are
+dev/build-tooling only, both `image-size` (no patched release exists; unused
+`@nx/vite`→less chain). The nx 22 migration (2026-09-08) cleared the `nx`
+19.5.7 / `webpack-dev-server` 4 / `brace-expansion` tracks. Tracks:
+`MAINNET_READINESS.md` §7.
 
 ### F9 — CI security pipeline
 

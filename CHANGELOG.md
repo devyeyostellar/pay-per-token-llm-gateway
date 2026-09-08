@@ -15,10 +15,19 @@ All notable changes to the x402 LLM Gateway project.
 - **Redis fail-fast:** bounded retry strategy + connect timeout so a down
   Redis fails startup instead of hanging forever
 - **Dependency posture:** NestJS 10 → **11.2.3** (Express 5.2.1, multer
-  2.2.0), Next 14 → **15.5.25** (React 19), plus overrides for express/ws/
-  body-parser/qs/uuid/lodash/js-yaml/toml/postcss/file-type/minimatch/
-  serialize-javascript/fast-uri/adm-zip — **0 critical, 0 runtime-reachable
-  advisories** (9 remain, dev-tooling only; see `MAINNET_READINESS.md` §7)
+  2.2.0), Next 14 → **15.5.25** (React 19), **nx 19.5 → 22.7.9**
+  (eslint-config-prettier 10), plus overrides for express/ws/body-parser/qs/
+  uuid/lodash/js-yaml/toml/postcss/file-type/minimatch/serialize-javascript/
+  fast-uri/adm-zip — **0 critical, 0 runtime-reachable advisories**; the 9
+  dev-tooling advisories dropped to **2 high** with the nx 22 migration, both
+  `image-size` (via the unused @nx/vite→less chain; no patched release exists)
+  — see `MAINNET_READINESS.md` §7
+- **Build fix:** the nx 22 tree pulled `supports-color@7.2.0` into the
+  `@babel/core` peer chain, splitting `next` into two store instances (root
+  `.bin/next` vs `apps/dashboard` resolved different copies, breaking the
+  pages-router `/404` prerender with the `<Html>` context error); pinning
+  `supports-color: 8.1.1` collapses the tree to one instance — `next build`
+  green again
 - **Input validation:** message/content bounds hardened in `@x402/validation`
 
 ### Observability & operations

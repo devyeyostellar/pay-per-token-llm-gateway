@@ -20,6 +20,8 @@ allowBuilds:
   esbuild: true
   nx: true
   prisma: true
+  # napi native binary used by nx 22 for workspace resolution
+  unrs-resolver: true
 
 # Dependency overrides previously lived in the package.json `pnpm` field,
 # which pnpm v11 ignores. Each override here fixes a known advisory in a
@@ -60,6 +62,22 @@ overrides:
   # no longer callable and breaks coverage instrumentation).
   minimatch: '>=9.0.7 <10'
   'test-exclude>minimatch': '^3.0.4'
+  # The nx 22 toolchain pulls supports-color@7.2.0 into the @babel/core peer
+  # chain while next (and the rest of the tree) uses 8.1.1, which splits
+  # @babel/core -> next into TWO store instances. The root .bin/next shim then
+  # resolves one instance while apps/dashboard resolves the other, so `next
+  # build` mixes two next copies and the pages-router /404 prerender fails with
+  # "<Html> should not be imported outside of pages/_document". Pinning one
+  # version collapses the tree to a single next instance (verified: build green).
+  supports-color: '8.1.1'
+  # sass is an optional peer of next; keep the 1.102 line that shipped with the
+  # known-working build rather than the 1.104 line the nx 22 tree pulls.
+  sass: '1.102.0'
+  # nx 22 pins brace-expansion to exactly 5.0.8 (GHSA-rgw5-rvv9-x895, DoS via
+  # unbounded intermediate arrays). Scoped override replaces only that pin — a
+  # global override would force minimatch/glob's ^2.x consumers onto the 5.x
+  # API and break jest/eslint. Build-time tooling only.
+  'brace-expansion@5.0.8': '5.0.9'
   serialize-javascript: '>=7.0.5'
   fast-uri: '>=3.1.6'
   adm-zip: '>=0.6.0'

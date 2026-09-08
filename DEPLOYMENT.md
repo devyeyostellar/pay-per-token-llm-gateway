@@ -393,11 +393,28 @@ on testnet:
 | `approve` → quorum             | ✅              | `approved` event emitted; transfer to unfunded token failed **closed** (`MissingValue`) — fail-closed behavior confirmed |
 | Deploy + init credit-escrow    | ✅              | `CDCLIZ45BJUEXOJVJDQVU25VJRIMCF77B7TENHUZAR5JUCRITZQEJ4F3`; `balance` = 0                                                |
 
-Notes: the USDC asset contract (`CBIELT…`) is controlled by its own admin, so
-minting test USDC requires issuer cooperation — the deposit→charge leg is
-covered by the e2e suite (mocked token) and the unit benchmarks. The payout
-transfer leg requires funding the multisig with real testnet USDC; the
-fail-closed behavior when the token is unfunded was verified live.
+**Escrow lifecycle (deposit → charge → refund → revenue withdrawal) — verified
+live 2026-09-08** with a self-deployed test token (own SAC admin, so minting
+needs no issuer cooperation):
+
+| Leg                                  | Result          | Evidence                                                   |
+| ------------------------------------ | --------------- | ---------------------------------------------------------- |
+| Deploy test SAC (`TUSDC`, own admin) | ✅              | `CDFD5KD7QRNOQTBEU42YHF42AXC3YSN3X3OMGNM345FFZQB62ZW44RRO` |
+| Deploy + init escrow bound to it     | ✅              | `CCOZEFLX7ADDYFNFXR7F4IDGN47XVAYYD3SUUWM6OGZLAJP6VQYNXNO5` |
+| Mint 1,000 → user                    | ✅              | user balance = 1,000                                       |
+| `deposit` 800 (user-signs transfer)  | ✅              | escrow balance(user) = 800; trustline required first       |
+| `charge` 250 (admin)                 | ✅              | balance 800→550; revenue 0→250; `usage` event              |
+| **Replay charge (same quote)**       | ✅ **rejected** | VM trap; balance stays 550                                 |
+| `refund` 50 (admin)                  | ✅              | escrow balance 550→500; user tokens +50                    |
+| **Replay refund (same quote)**       | ✅ **rejected** | VM trap; balance stays 500                                 |
+| `withdraw_revenue` 250 → admin       | ✅              | revenue 250→0; escrow tokens 750→500                       |
+| **Accounting invariant**             | ✅              | escrow tokens (500) == escrow balance (500) + revenue (0)  |
+
+Note on real USDC: the production USDC asset contract (`CBIELT…`) is
+controlled by its own admin, so minting _real_ testnet USDC requires issuer
+cooperation — this leg is covered by the e2e suite (mocked token) and unit
+benchmarks; the payout transfer leg requires funding the multisig with real
+testnet USDC (fail-closed when unfunded was verified live).
 
 ### 6.2 Operations
 

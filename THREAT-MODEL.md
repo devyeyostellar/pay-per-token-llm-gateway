@@ -128,8 +128,8 @@
    re-quotes. Memo enforcement is deliberately off.
 4. **Cross-provider debt hopping** (P10): a payer with debt on provider A can
    use provider B. Per-provider trust model.
-5. **Dev/build-tooling advisories remain** (`nx` 19, `webpack-dev-server` 4,
-   `image-size` — no patched release exists). Build-time only, no
+5. **Dev/build-tooling advisories remain** (2 high, both `image-size` — no
+   patched release exists; unused `@nx/vite`→less chain). Build-time only, no
    runtime-reachable path; tracked in `MAINNET_READINESS.md` §7.
 6. **Soroban gas/storage benchmarks are executed and gated in CI.**
    `src/bench.rs` in each contract measures fee/entry costs at growing

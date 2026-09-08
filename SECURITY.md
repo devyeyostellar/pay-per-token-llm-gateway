@@ -101,9 +101,11 @@ Dependency posture (2026-09-08): **0 critical** and **0 runtime-reachable**
 advisories. The gateway runs **NestJS 11.2.3 on Express 5.2.1** (with multer
 2.2.0 pinned by platform-express) and the dashboard runs **Next 15.5.25 +
 React 19** — the three previously-tracked major-version residuals are
-resolved. All remaining advisories are dev/build-tooling only (nx,
-webpack-dev-server, image-size) with no runtime-reachable path — see
-`MAINNET_READINESS.md` §7.
+resolved, and the nx 22 migration cleared the remaining dev-tooling track
+(`brace-expansion` fixed via scoped override). `pnpm audit` now reports **2
+high advisories, both `image-size`** — dev/build-tooling only, via the unused
+`@nx/vite`→less chain, no patched release exists, no runtime-reachable path —
+see `MAINNET_READINESS.md` §7.
 
 ## Known Residual Risks
 
@@ -119,10 +121,10 @@ mainnet go/no-go path or consciously deferred — see
    implemented. Callers behind a shared NAT can rotate through addresses to
    evade it; single-use payment enforcement (atomic DB claim + Redis +
    on-chain replay guards) is the stronger backstop.
-3. **Dev/build-tooling advisories remain** (`nx` 19, `webpack-dev-server` 4,
-   `image-size` — the last has no patched release). All are build-time only,
-   never shipped to runtime, with no runtime-reachable path. Tracked in
-   `MAINNET_READINESS.md` §7 (nx 22 migration).
+3. **Dev/build-tooling advisories remain** (2 high, both `image-size` — no
+   patched release exists; via the unused `@nx/vite`→less chain). Build-time
+   only, never shipped to runtime, with no runtime-reachable path. Tracked in
+   `MAINNET_READINESS.md` §7.
 4. **Per-entry persistent storage TTLs.** Soroban records each carry their
    own TTL, refreshed on write. An entry untouched for ~1M ledgers after its
    last write may require a paid restore-from-archive read to be read again.

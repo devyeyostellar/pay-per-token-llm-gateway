@@ -299,12 +299,12 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
       # Fail the build on any critical advisory. The last runtime-reachable
-      # advisories were resolved by the NestJS 11 / Next 15 major upgrades
-      # (2026-09-08); the remainder are dev/build-tooling only (nx 19,
-      # webpack-dev-server 4, image-size) and tracked in
-      # MAINNET_READINESS.md §7. Reachable runtime advisories in the gateway
-      # tree (express, ws, body-parser, qs, …) stay pinned via overrides in
-      # pnpm-workspace.yaml.
+      # advisories were resolved by the NestJS 11 / Next 15 major upgrades and
+      # the nx 22 migration (2026-09-08); the remainder are dev/build-tooling
+      # only (2 high, both image-size — no patched release, unused @nx/vite
+      # chain) and tracked in MAINNET_READINESS.md §7. Reachable runtime
+      # advisories in the gateway tree (express, ws, body-parser, qs, …) stay
+      # pinned via overrides in pnpm-workspace.yaml.
       - run: pnpm audit --audit-level=critical
       - name: Report full advisory summary (non-blocking)
         run: pnpm audit --audit-level=high || true
@@ -334,8 +334,8 @@ jobs:
       - uses: actions/checkout@v4
 
       # Filesystem scan (lockfiles + manifests + source). Report-only for
-      # now: remaining findings are dev/build-tooling advisories (nx 19,
-      # webpack-dev-server 4, image-size) with no runtime-reachable path;
+      # now: remaining findings are dev/build-tooling advisories (2 high,
+      # both image-size, no patched release) with no runtime-reachable path;
       # the hard gate is the `security` job's critical-level pnpm audit.
       # Findings land in the GitHub Security tab via SARIF.
       - name: Run Trivy (fs)

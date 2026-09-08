@@ -224,14 +224,16 @@ dashboard build all green on the new stacks):
 | `@nestjs/core` / platform-express | 10.3 (moderate, <11.1.18) | **11.2.3** on Express 5.2.1                     | Express 5: no wildcard routes or `req.query` mutation in gateway → clean migration |
 | `multer` (via platform-express)   | 1.4.x (high, <2.2.0)      | **2.2.0** (pinned by platform-express 11.1.28+) | gateway exposes no file-upload endpoints; ESM/CJS constraint lifted by NestJS 11   |
 
-**Remaining (2026-09-08)** — all dev/build-tooling only, never shipped to
+**Updated 2026-09-08 (after the nx 22 migration)** — the `nx` 19.5.7 and
+`webpack-dev-server` tracks above are **resolved** by the nx 22.7.9 migration
+(which also cleared `brace-expansion` via a scoped override to 5.0.9, and
+`minimatch`/`test-exclude` via overrides). `pnpm audit` now reports **2 high
+advisories, both `image-size`** — dev/build-tooling only, never shipped to
 runtime, no runtime-reachable path:
 
-| Package              | Severity | Why not fixed                                                                                                            | Track                                      |
-| -------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------ |
-| `nx` 19.5.7          | moderate | fix requires nx ≥22.7.2 (major); pinned with webpack-dev-server 4.x via `@nx/webpack`                                    | nx 22 migration before next toolchain bump |
-| `webpack-dev-server` | moderate | 4.15.2 pinned by `@nx/webpack@19`; fix needs 5.x (major) which `@nx/webpack` 19 does not support                         | resolved by the nx 22 track                |
-| `image-size`         | high     | **no patched version exists** (patched: null); dev-only transitive of `less@4.1.3` (CSS compilation in nx webpack chain) | drop `less`/nx-webpack when migrating      |
+| Package           | Severity | Why not fixed                                                                                                                                                                                         | Track                                                                         |
+| ----------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `image-size` (×2) | high     | **no patched version exists** (patched: null; vulnerable ≤2.0.2, latest 2.0.2); dev-only transitive of `less@4.1.3` via the unused `@nx/vite`→vite→less chain (this project uses no vite/vitest/less) | drop the `@nx/vite`/`@nx/module-federation` chain or wait for an upstream fix |
 
 ## 8. References
 
