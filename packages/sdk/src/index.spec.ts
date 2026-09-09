@@ -280,6 +280,35 @@ describe('X402Client', () => {
         expect(result.error).toContain('Payment required');
       }
     });
+
+    it('returns an error when the secret-key submission fails', async () => {
+      const quote = {
+        paymentAddress: 'GB...',
+        amount: '10000000',
+        asset: 'USDC' as PaymentAsset,
+        assetIssuer: 'GA...',
+        memo: { type: 'hash', value: '0x123' },
+        network: 'testnet' as const,
+        expiresAt: Math.floor(Date.now() / 1000) + 300,
+      };
+
+      mockFetch.mockResolvedValueOnce(mock402Response({ quote }));
+      mockBuildPaymentTransaction.mockResolvedValueOnce({
+        txHash: 'sk-submit-fail',
+        txXdr: 'AAAA...',
+      });
+      mockCreateHorizonServer.mockReturnValueOnce({
+        submitTransaction: jest.fn().mockRejectedValue(new Error('tx_too_late')),
+      });
+
+      const client = new X402Client(defaultConfig);
+      const result = await client.call(chatRequest);
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('tx_too_late');
+      }
+    });
   });
 
   describe('executePayment — external signer path', () => {
@@ -351,6 +380,126 @@ describe('X402Client', () => {
       if (!result.success) {
         expect(result.error).toContain('publicKey');
       }
+    });
+
+    it('returns an error when the external signer rejects signing', async () => {
+      const signTransaction = jest.fn().mockRejectedValue(new Error('User rejected the request'));
+
+      const client = new X402Client({
+        gatewayUrl: 'https://gateway.test',
+        publicKey: 'GABCDEF...',
+        signTransaction,
+        network: 'testnet',
+        paymentTimeout: 300_000,
+      });
+
+      const quote = {
+        paymentAddress: 'GB...',
+        amount: '10000000',
+        asset: 'USDC' as PaymentAsset,
+        assetIssuer: 'GA...',
+        memo: { type: 'hash', value: '0x123' },
+        network: 'testnet' as const,
+        expiresAt: Math.floor(Date.now() / 1000) + 300,
+      };
+
+      mockFetch.mockResolvedValueOnce(mock402Response({ quote }));
+      mockBuildUnsignedPaymentTransaction.mockResolvedValueOnce({
+        txHash: 'ext-reject',
+        txXdr: 'UNSIGNED_XDR',
+      });
+
+      const result = await client.call(chatRequest);
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('User rejected the request');
+      }
+      // The signed XDR must never be submitted when signing was rejected.
+      expect(mockCreateHorizonServer).not.toHaveBeenCalled();
+    });
+
+    it('returns an error when the signed transaction submission fails', async () => {
+      const client = new X402Client({
+        gatewayUrl: 'https://gateway.test',
+        publicKey: 'GABCDEF...',
+        signTransaction: jest.fn().mockResolvedValue('SIGNED_XDR'),
+        network: 'testnet',
+        paymentTimeout: 300_000,
+      });
+
+      const quote = {
+        paymentAddress: 'GB...',
+        amount: '10000000',
+        asset: 'USDC' as PaymentAsset,
+        assetIssuer: 'GA...',
+        memo: { type: 'hash', value: '0x123' },
+        network: 'testnet' as const,
+        expiresAt: Math.floor(Date.now() / 1000) + 300,
+      };
+
+      mockFetch.mockResolvedValueOnce(mock402Response({ quote }));
+      mockBuildUnsignedPaymentTransaction.mockResolvedValueOnce({
+        txHash: 'ext-submit-fail',
+        txXdr: 'UNSIGNED_XDR',
+      });
+      mockCreateHorizonServer.mockReturnValueOnce({
+        submitTransaction: jest.fn().mockRejectedValue(new Error('tx_bad_seq')),
+      });
+
+      const result = await client.call(chatRequest);
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('tx_bad_seq');
+      }
+    });
+
+    it('returns an error when the transaction is not confirmed within the timeout', async () => {
+      jest.useFakeTimers();
+
+      const client = new X402Client({
+        gatewayUrl: 'https://gateway.test',
+        publicKey: 'GABCDEF...',
+        signTransaction: jest.fn().mockResolvedValue('SIGNED_XDR'),
+        network: 'testnet',
+        paymentTimeout: 4_000,
+      });
+
+      const quote = {
+        paymentAddress: 'GB...',
+        amount: '10000000',
+        asset: 'USDC' as PaymentAsset,
+        assetIssuer: 'GA...',
+        memo: { type: 'hash', value: '0x123' },
+        network: 'testnet' as const,
+        expiresAt: Math.floor(Date.now() / 1000) + 300,
+      };
+
+      mockFetch.mockResolvedValueOnce(mock402Response({ quote }));
+      mockBuildUnsignedPaymentTransaction.mockResolvedValueOnce({
+        txHash: 'ext-timeout',
+        txXdr: 'UNSIGNED_XDR',
+      });
+      mockCreateHorizonServer.mockReturnValueOnce({
+        submitTransaction: jest.fn().mockResolvedValue(undefined),
+      });
+      // Horizon keeps returning tx-not-found (non-ok) so confirmation never
+      // arrives and the deadline is reached.
+      mockFetch.mockResolvedValue(mockErrorResponse(404, 'Not Found'));
+
+      const resultPromise = client.call(chatRequest);
+      // Advance time in 2s steps (matching the poll interval) past the 4s
+      // paymentTimeout so the retry loop exhausts its deadline.
+      await jest.advanceTimersByTimeAsync(2_000);
+      await jest.advanceTimersByTimeAsync(2_000);
+      const result = await resultPromise;
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error).toContain('not confirmed');
+      }
+      jest.useRealTimers();
     });
   });
 

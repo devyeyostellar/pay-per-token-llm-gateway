@@ -21,7 +21,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PNPM_VERSION: '9'
+  PNPM_VERSION: '11.24.0'
 
 permissions:
   contents: read

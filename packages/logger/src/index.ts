@@ -2,6 +2,8 @@
 // @x402/logger — Structured logging
 // ──────────────────────────────────────────────
 
+export * from './tracing';
+
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 interface LogEntry {

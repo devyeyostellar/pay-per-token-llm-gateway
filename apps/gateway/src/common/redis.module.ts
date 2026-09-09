@@ -8,7 +8,10 @@ const redisProvider = {
     const config = getConfig();
     return new Redis(config.redis.url, {
       maxRetriesPerRequest: 3,
-      retryStrategy: (times) => Math.min(times * 100, 3000),
+      // Bounded retries + connect timeout so a down Redis fails startup
+      // (or surfaces a readiness error) instead of hanging forever.
+      connectTimeout: 5_000,
+      retryStrategy: (times) => (times > 10 ? null : Math.min(times * 100, 3000)),
       // Connect eagerly so connection failures surface at startup,
       // not at the first request.
       lazyConnect: false,

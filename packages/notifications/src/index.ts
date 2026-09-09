@@ -1,5 +1,5 @@
 // ──────────────────────────────────────────────
-// @x402/notifications — Email, webhook, in-app
+// @x402/notifications — Webhook, in-app
 // ──────────────────────────────────────────────
 
 import type { NotificationChannel, NotificationEvent } from '@x402/types';
@@ -67,153 +67,46 @@ export function markInAppRead(messageId: string): boolean {
   return false;
 }
 
-// ── Email Notification Handler ───────────────
+// ── Webhook Notification Handler ─────────────
 
-export class EmailNotificationHandler implements NotificationHandler {
-  channel: NotificationChannel = 'email';
-
-  constructor(
-    private options: {
-      smtpHost?: string;
-      smtpPort?: number;
-      fromAddress?: string;
-    } = {},
-  ) {}
-
-  async send(payload: NotificationPayload): Promise<boolean> {
-    if (!this.options.smtpHost || !this.options.fromAddress) {
-      logger.warn(
-        'Email notifications not configured (missing SMTP_HOST or EMAIL_FROM) — skipping',
-      );
-      return false;
-    }
-
-    // Construct the email body from the notification event
-    const eventLabel = payload.event.replace(/_/g, ' ');
-    const subject = `x402 Gateway: ${eventLabel}`;
-    const body = [
-      `Event: ${payload.event}`,
-      `Provider: ${payload.providerId}`,
-      `Timestamp: ${new Date().toISOString()}`,
-      '',
-      'Data:',
-      ...Object.entries(payload.data).map(([k, v]) => `  ${k}: ${JSON.stringify(v)}`),
-    ].join('\n');
-
-    // Try to use nodemailer when available (most deployments will have it).
-    // Falls back to a raw SMTP approach when nodemailer is not installed,
-    // which works for simple text-only notifications without authentication.
-    try {
-      return await this.sendWithNodemailer(subject, body);
-    } catch {
-      return await this.sendRaw(subject, body);
-    }
+/**
+ * Stable, content-derived event id (djb2 hash over the serialized payload,
+ * hex-encoded). Retries of the same notification — same event, provider,
+ * and data — produce the SAME id, so receivers can dedupe idempotently.
+ */
+function deriveEventId(payload: NotificationPayload): string {
+  const input = JSON.stringify({
+    event: payload.event,
+    providerId: payload.providerId,
+    data: payload.data,
+  });
+  let hash = 5381;
+  for (let i = 0; i < input.length; i++) {
+    hash = ((hash << 5) + hash + input.charCodeAt(i)) | 0;
   }
-
-  /** Send via nodemailer when available. */
-  private async sendWithNodemailer(subject: string, body: string): Promise<boolean> {
-    try {
-      // Dynamic import — nodemailer is an optional dependency.
-      const nodemailer = await import('nodemailer');
-
-      const transporter = nodemailer.default.createTransport({
-        host: this.options.smtpHost,
-        port: this.options.smtpPort || 587,
-        secure: this.options.smtpPort === 465,
-      });
-
-      await transporter.sendMail({
-        from: this.options.fromAddress,
-        to: this.options.fromAddress, // notifications go to the gateway operator
-        subject,
-        text: body,
-      });
-
-      logger.info('Email notification sent', { subject });
-      return true;
-    } catch (err) {
-      // nodemailer not installed or failed — re-throw so we fall back
-      if (
-        err instanceof Error &&
-        (err.message.includes('Cannot find module') || err.message.includes('nodemailer'))
-      ) {
-        logger.warn('nodemailer not installed — falling back to raw SMTP');
-      }
-      throw err;
-    }
-  }
-
-  /** Fallback raw SMTP sender (no auth, text-only). */
-  private async sendRaw(subject: string, body: string): Promise<boolean> {
-    try {
-      const net = await import('net');
-      const host = this.options.smtpHost!;
-      const port = this.options.smtpPort || 25;
-
-      await new Promise<void>((resolve, reject) => {
-        const socket = net.createConnection(port, host, () => {
-          const send = (cmd: string) => socket.write(cmd + '\r\n');
-
-          let step = 0;
-          socket.on('data', (data: Buffer) => {
-            const code = parseInt(data.toString().slice(0, 3), 10);
-            if (code >= 500) {
-              socket.destroy();
-              return reject(new Error(`SMTP error ${code}: ${data.toString().trim()}`));
-            }
-
-            switch (step++) {
-              case 0:
-                send(`HELO x402-gateway`);
-                break;
-              case 1:
-                send(`MAIL FROM:<${this.options.fromAddress}>`);
-                break;
-              case 2:
-                send(`RCPT TO:<${this.options.fromAddress}>`);
-                break;
-              case 3:
-                send('DATA');
-                break;
-              case 4: {
-                const msg = [
-                  `From: ${this.options.fromAddress}`,
-                  `To: ${this.options.fromAddress}`,
-                  `Subject: ${subject}`,
-                  'Content-Type: text/plain; charset=utf-8',
-                  '',
-                  body,
-                  '.',
-                ].join('\r\n');
-                send(msg);
-                break;
-              }
-              case 5:
-                send('QUIT');
-                socket.end();
-                resolve();
-                break;
-            }
-          });
-
-          socket.on('error', reject);
-          socket.setTimeout(10_000, () => {
-            socket.destroy();
-            reject(new Error('SMTP connection timeout'));
-          });
-        });
-      });
-
-      logger.info('Email notification sent (raw SMTP)', { subject });
-      return true;
-    } catch (err) {
-      logger.error('Raw SMTP email delivery failed', { error: String(err) });
-      return false;
-    }
-  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
-// ── Webhook Notification Handler ─────────────
+/**
+ * Build the webhook envelope ONCE per notification: a stable eventId and a
+ * fixed body. Retries must deliver the identical payload — a retry with a
+ * different timestamp would otherwise break receiver-side idempotency and
+ * (for the signed path) invalidate the signature.
+ */
+function buildEnvelope(payload: NotificationPayload): {
+  body: string;
+  eventId: string;
+} {
+  const eventId = deriveEventId(payload);
+  const body = JSON.stringify({
+    eventId,
+    event: payload.event,
+    providerId: payload.providerId,
+    data: payload.data,
+    timestamp: new Date().toISOString(),
+  });
+  return { body, eventId };
+}
 
 export class WebhookNotificationHandler implements NotificationHandler {
   channel: NotificationChannel = 'webhook';
@@ -233,18 +126,18 @@ export class WebhookNotificationHandler implements NotificationHandler {
 
     const maxRetries = this.options.retryCount || 3;
     const retryDelay = this.options.retryDelayMs || 1000;
+    const { body, eventId } = buildEnvelope(payload);
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'X-x402-Event-Id': eventId,
+    };
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         const response = await fetch(webhookUrl, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            event: payload.event,
-            providerId: payload.providerId,
-            data: payload.data,
-            timestamp: new Date().toISOString(),
-          }),
+          headers,
+          body, // identical body on every retry
         });
 
         if (response.ok) {
@@ -275,6 +168,8 @@ export class WebhookNotificationHandler implements NotificationHandler {
    * receiver can verify the payload came from this gateway.
    *
    * Signature: hex(HMAC-SHA256(secret, rawBody)) sent as `X-x402-Signature`.
+   * Event id: stable per notification (same body on every retry) sent as
+   * `X-x402-Event-Id` for receiver-side dedup.
    */
   async sendWithSignature(
     payload: NotificationPayload,
@@ -283,14 +178,12 @@ export class WebhookNotificationHandler implements NotificationHandler {
   ): Promise<boolean> {
     const maxRetries = this.options.retryCount || 3;
     const retryDelay = this.options.retryDelayMs || 1000;
-    const body = JSON.stringify({
-      event: payload.event,
-      providerId: payload.providerId,
-      data: payload.data,
-      timestamp: new Date().toISOString(),
-    });
+    const { body, eventId } = buildEnvelope(payload);
 
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'X-x402-Event-Id': eventId,
+    };
     if (secret) {
       const { createHmac } = await import('crypto');
       headers['X-x402-Signature'] = createHmac('sha256', secret).update(body).digest('hex');

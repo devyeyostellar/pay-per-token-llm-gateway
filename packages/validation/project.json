@@ -4,6 +4,14 @@
   "sourceRoot": "packages/validation/src",
   "projectType": "library",
   "targets": {
-    "lint": { "executor": "@nx/eslint:lint" }
+    "lint": { "executor": "@nx/eslint:lint" },
+    "test": {
+      "executor": "@nx/jest:jest",
+      "outputs": ["{workspaceRoot}/coverage/packages/validation"],
+      "options": {
+        "jestConfig": "packages/validation/jest.config.ts",
+        "coverageReporters": ["html", "text"]
+      }
+    }
   }
 }

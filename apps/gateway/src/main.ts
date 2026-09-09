@@ -6,6 +6,9 @@ import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import { MetricsInterceptor } from './common/metrics.interceptor';
+import { MetricsService } from './common/metrics.service';
+import { createTraceContextMiddleware } from './common/trace-context.middleware';
 import { getConfig, validateEnv } from '@x402/config';
 import { logger, enableJsonLogs } from '@x402/logger';
 
@@ -26,6 +29,11 @@ async function bootstrap() {
   // Security headers (CSP, X-Frame-Options, HSTS, nosniff, etc.)
   app.use(helmet());
 
+  // W3C trace context: continue or start a trace, propagate `traceparent` on
+  // responses, record an `http.request` span per request. Must run before
+  // route handling so controllers can create child spans via req.traceContext.
+  app.use(createTraceContextMiddleware(app.get(MetricsService)));
+
   // Cookie parser — required for reading httpOnly session cookies set by
   // the auth controller and sent automatically by the browser.
   app.use(cookieParser());
@@ -33,8 +41,13 @@ async function bootstrap() {
   // Body size limit: 1 MB is enough for any reasonable chat completion request
   app.use(json({ limit: '1mb' }));
 
-  // Global prefix — health endpoint is excluded so load balancers can hit /health directly
-  app.setGlobalPrefix('api/v1', { exclude: ['health'] });
+  // Global prefix — health + metrics endpoints are excluded so load
+  // balancers and Prometheus scrapers can hit /health and /metrics directly.
+  // Sub-paths need explicit wildcard entries: 'health' alone only matches
+  // the exact /health route, not /health/live or /health/ready.
+  app.setGlobalPrefix('api/v1', {
+    exclude: ['health', 'health/(.*)', 'metrics', 'metrics/(.*)'],
+  });
 
   // CORS
   app.enableCors({
@@ -50,8 +63,20 @@ async function bootstrap() {
   const httpServer = app.getHttpAdapter().getInstance() as Express;
   httpServer.set('trust proxy', /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProxy);
 
+  // Hard upper bounds on the HTTP server itself: a client that never finishes
+  // sending its request (or its headers) must not hold a connection open
+  // indefinitely. The 300s ceiling is well above any legitimate request;
+  // streaming LLM responses are unaffected (these limits govern request
+  // receipt, not response duration).
+  const rawServer = app.getHttpServer() as import('http').Server;
+  rawServer.requestTimeout = 300_000;
+  rawServer.headersTimeout = 65_000;
+
   // Global exception filter (consistent error format + Retry-After for 429)
   app.useGlobalFilters(new HttpExceptionFilter());
+
+  // Prometheus request metrics for every route
+  app.useGlobalInterceptors(new MetricsInterceptor(app.get(MetricsService)));
 
   // Global validation
   app.useGlobalPipes(

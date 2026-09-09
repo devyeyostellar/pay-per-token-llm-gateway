@@ -7,7 +7,11 @@ on:
     branches: [main]
 
 env:
-  PNPM_VERSION: '9'
+  # Pinned to an exact version: floating '11' resolved to a pnpm release that
+  # requires Node >= 22.13, which crashed on the then-pinned Node 20 runners
+  # (ERR_UNKNOWN_BUILTIN_MODULE: node:sqlite). Keep in sync with the
+  # `packageManager` field in package.json and .nvmrc (Node 22+).
+  PNPM_VERSION: '11.24.0'
 
 jobs:
   lint:
@@ -118,6 +122,59 @@ jobs:
         env:
           NODE_ENV: test
 
+  backup-restore:
+    name: Backup/Restore Drill
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: x402_gateway
+          POSTGRES_USER: x402
+          POSTGRES_PASSWORD: x402_drill
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U x402"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read Node version from .nvmrc
+        id: nvm
+        run: echo "NODE_VERSION=$(cat .nvmrc)" >> $GITHUB_OUTPUT
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.nvm.outputs.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+
+      # The drill proves the documented recovery path (OPERATIONS.md §2.1)
+      # every run: real migrations → seed → pg_dump → pg_restore into a
+      # FRESH database → table/row/sample parity. It also fails when the
+      # schema drifts from the migration history (a fresh `migrate deploy`
+      # must produce the full schema — this is what caught the missing
+      # UnderpaymentDebt migration in 2026-09-09).
+      - name: Create source + target databases
+        run: |
+          docker run --rm --network host postgres:16-alpine \
+            psql "postgresql://x402:x402_drill@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 -c \
+            'CREATE DATABASE x402_drill_source;' -c 'CREATE DATABASE x402_drill_target;'
+
+      - name: Run backup/restore drill
+        run: bash scripts/backup-restore-drill.sh
+        env:
+          DRILL_SOURCE_URL: postgresql://x402:x402_drill@127.0.0.1:5432/x402_drill_source
+          DRILL_TARGET_URL: postgresql://x402:x402_drill@127.0.0.1:5432/x402_drill_target
+
   quickstart-env:
     name: Verify .env Quickstart
     runs-on: ubuntu-latest
@@ -142,10 +199,16 @@ jobs:
       # Reproduce the documented quickstart exactly: copy the example env file,
       # fill in a real JWT_SECRET, and assert the gateway config loads from it.
       # Guards against regressions in @x402/config .env loading.
+      #
+      # The template ships dev defaults (NODE_ENV=development, localhost
+      # Redis), which validateEnv() rightly rejects under NODE_ENV=production.
+      # To exercise the production path we replace the localhost REDIS_URL the
+      # way an operator would before deploy, then assert .env → config loads.
       - name: Create .env from example with a real JWT_SECRET
         run: |
           cp .env.example .env
           sed -i "s|^JWT_SECRET=$|JWT_SECRET=$(openssl rand -base64 32)|" .env
+          sed -i "s|^REDIS_URL=redis://localhost:6379|REDIS_URL=redis://prod-redis.internal:6379|" .env
 
       - name: Assert gateway config validates from .env
         run: |
@@ -179,14 +242,38 @@ jobs:
             contracts/*/target
           key: ${{ runner.os }}-cargo-${{ hashFiles('contracts/**/Cargo.toml') }}
 
-      - name: Test payment-verifier
+      # `cargo test` runs the full unit matrix INCLUDING the gas/storage
+      # benchmarks (src/bench.rs in each contract) — their assertions gate
+      # the O(1)-in-history invariant (flat fee + flat entry counts) and the
+      # bounded pagination reads, so a regression fails the build.
+      - name: Test payment-verifier (incl. gas/storage benches)
         run: cd contracts/payment-verifier && cargo test
 
-      - name: Test credit-escrow
+      - name: Test credit-escrow (incl. gas/storage benches)
         run: cd contracts/credit-escrow && cargo test
 
-      - name: Test multisig
+      - name: Test multisig (incl. gas/storage benches)
         run: cd contracts/multisig && cargo test
+
+      # Contract size gate: Soroban deploy limit is 64 KiB per contract.
+      # Build the actual WASM artifacts and fail if any exceeds the limit
+      # (with headroom — the current artifacts are all < 10 KiB).
+      - name: Build WASM artifacts
+        run: |
+          for c in payment-verifier credit-escrow multisig; do
+            (cd contracts/$c && cargo build --release --target wasm32-unknown-unknown)
+          done
+
+      - name: Enforce contract size gate (< 64 KiB deploy limit)
+        run: |
+          for f in contracts/*/target/wasm32-unknown-unknown/release/*.wasm; do
+            sz=$(stat -c%s "$f")
+            echo "$f: $((sz/1024)) KiB"
+            if [ "$sz" -gt 65536 ]; then
+              echo "::error::Contract $f is $((sz/1024)) KiB — exceeds the 64 KiB Soroban deploy limit"
+              exit 1
+            fi
+          done
 
   build:
     name: Build
@@ -255,7 +342,7 @@ jobs:
           pnpm exec next build
 
   security:
-    name: Security Scan
+    name: Dependency Audit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -274,4 +361,178 @@ jobs:
           cache: 'pnpm'
 
       - run: pnpm install --frozen-lockfile
+      # Fail the build on any critical advisory. The last runtime-reachable
+      # advisories were resolved by the NestJS 11 / Next 15 major upgrades and
+      # the nx 22 migration (2026-09-08); the remainder are dev/build-tooling
+      # only (2 high, both image-size — no patched release, unused @nx/vite
+      # chain) and tracked in MAINNET_READINESS.md §7. Reachable runtime
+      # advisories in the gateway tree (express, ws, body-parser, qs, …) stay
+      # pinned via overrides in pnpm-workspace.yaml.
       - run: pnpm audit --audit-level=critical
+      - name: Report full advisory summary (non-blocking)
+        run: pnpm audit --audit-level=high || true
+
+  gitleaks:
+    name: Secret Scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Scans the full commit history for leaked secrets (API keys, private
+      # keys, Stellar secrets) and fails the build when one is found.
+      # gitleaks/gitleaks-action@v2 requires a paid GITLEAKS_LICENSE for
+      # organization repositories, so run the OSS CLI (MIT) directly instead.
+      # Scans the full commit history; fails on any real leak. The only
+      # findings are documented test/doc fixtures, whitelisted in
+      # .gitleaksignore.
+      - name: Run gitleaks
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/repo" \
+            -w /repo \
+            ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            git --redact=100 --verbose --exit-code 1
+
+  trivy:
+    name: Vulnerability Scan (trivy)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write # for SARIF upload to the Security tab
+    steps:
+      - uses: actions/checkout@v4
+
+      # Filesystem scan (lockfiles + manifests + source). Report-only for
+      # now: remaining findings are dev/build-tooling advisories (2 high,
+      # both image-size, no patched release) with no runtime-reachable path;
+      # the hard gate is the `security` job's critical-level pnpm audit.
+      # Findings land in the GitHub Security tab via SARIF.
+      # v0.28.0 is broken upstream (it references the nonexistent
+      # aquasecurity/setup-trivy@v0.2.1); v0.36.0 pins setup-trivy by full SHA
+      # to v0.2.6, which exists.
+      - name: Run Trivy (fs)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+          exit-code: '0'
+          skip-dirs: node_modules,dist,.next,coverage,.git
+
+      - name: Upload Trivy results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+
+  osv-scanner:
+    name: Dependency Scan (osv-scanner)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Scans all lockfiles (pnpm-lock.yaml, contracts Cargo.lock) against
+      # the OSV database. Report-only — see the `security` job for the gate.
+      #
+      # The osv-scanner-action composite only exposes scan-args (no
+      # fail-on-vuln input) and exits 1 whenever findings exist, so run the
+      # scanner image directly and swallow the exit code: findings are printed
+      # to the log, and the `security` job's critical gate remains the hard
+      # stop. `--recursive ./` is the action's own default scan-args.
+      - name: Run OSV scanner
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/repo" -w /repo \
+            ghcr.io/google/osv-scanner-action:v2.5.1 --recursive ./ \
+            || true
+
+  dast:
+    name: DAST (OWASP ZAP baseline)
+    runs-on: ubuntu-latest
+    services:
+      # The gateway requires live Postgres + Redis to boot; the ZAP baseline
+      # then exercises every unauthenticated endpoint (health, metrics,
+      # swagger, docs, 401/402 paths) the way an external attacker would.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: x402_gateway
+          POSTGRES_USER: x402
+          POSTGRES_PASSWORD: x402_dev_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U x402"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read Node version from .nvmrc
+        id: nvm
+        run: echo "NODE_VERSION=$(cat .nvmrc)" >> $GITHUB_OUTPUT
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.nvm.outputs.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm nx run database:generate
+
+      # Build the tsc output + esbuild bundle (the same artifact the Docker
+      # image runs), then boot it against the service containers.
+      - run: pnpm exec nx build gateway
+      - name: Start gateway (bundle) against dockerized Postgres/Redis
+        env:
+          NODE_ENV: development
+          JWT_SECRET: dast-scan-jwt-secret-0123456789abcdef
+          DATABASE_URL: postgresql://x402:x402_dev_password@127.0.0.1:5432/x402_gateway
+          REDIS_URL: redis://127.0.0.1:6379
+          PORT: '3000'
+          HOST: 127.0.0.1
+          NODE_PATH: /home/runner/work/pay-per-token-llm-gateway/pay-per-token-llm-gateway/packages/database/node_modules:/home/runner/work/pay-per-token-llm-gateway/pay-per-token-llm-gateway/node_modules
+        run: |
+          node dist/apps/gateway/main.js > /tmp/gateway.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:3000/health/live > /dev/null && break
+            sleep 2
+          done
+          curl -sf http://127.0.0.1:3000/health/ready
+
+      # OWASP ZAP baseline: passive + active-lite scan of the booted gateway.
+      # Report-only for now (findings land in the DAST step summary) — the
+      # hard security gates are the pnpm audit (critical) + gitleaks jobs.
+      - name: Run OWASP ZAP baseline scan
+        run: |
+          docker run --rm --network host -t \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py -t http://127.0.0.1:3000/ \
+            -r /zap/report-dast.html \
+            -J /zap/report-dast.json \
+            -I 200,401,402,404,503 \
+            -l WARN
+        continue-on-error: true
+
+      - name: Upload DAST report
+        uses: actions/upload-artifact@v4
+        with:
+          name: dast-report
+          path: /tmp/zap-report*
+        continue-on-error: true

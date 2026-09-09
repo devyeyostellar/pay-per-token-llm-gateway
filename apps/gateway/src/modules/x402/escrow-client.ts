@@ -19,6 +19,8 @@ export interface EscrowChargeOptions {
   contractId: string;
   rpcUrl: string;
   networkPassphrase: string;
+  /** RPC timeout in seconds (passed to the stellar-sdk contract client). */
+  timeoutSeconds?: number;
   /** Secret key of the contract admin (signs the invocation). */
   adminSecret: string;
   /** Stellar address of the user whose escrow balance to charge. */
@@ -33,6 +35,8 @@ export interface EscrowRefundOptions {
   contractId: string;
   rpcUrl: string;
   networkPassphrase: string;
+  /** RPC timeout in seconds (passed to the stellar-sdk contract client). */
+  timeoutSeconds?: number;
   adminSecret: string;
   user: string;
   /** Amount to refund in stroops (the surplus). */
@@ -66,7 +70,12 @@ export async function chargeEscrow(options: EscrowChargeOptions): Promise<Escrow
     const { Client } = contract;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const client: any = await Client.from({ contractId, rpcUrl, networkPassphrase });
+    const client: any = await Client.from({
+      contractId,
+      rpcUrl,
+      networkPassphrase,
+      ...(options.timeoutSeconds ? { timeout: options.timeoutSeconds } : {}),
+    });
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const tx: any = await client.charge({
@@ -115,7 +124,12 @@ export async function refundEscrow(options: EscrowRefundOptions): Promise<Escrow
     const { Client } = contract;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const client: any = await Client.from({ contractId, rpcUrl, networkPassphrase });
+    const client: any = await Client.from({
+      contractId,
+      rpcUrl,
+      networkPassphrase,
+      ...(options.timeoutSeconds ? { timeout: options.timeoutSeconds } : {}),
+    });
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const tx: any = await client.refund({

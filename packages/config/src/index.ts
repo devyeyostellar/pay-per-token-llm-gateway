@@ -81,6 +81,10 @@ export interface GatewayConfig {
     sorobanRpcUrl: string;
     /** Network passphrase */
     networkPassphrase: string;
+    /** Per-request Horizon timeout (ms) */
+    horizonTimeoutMs: number;
+    /** Per-request Soroban RPC timeout (ms) */
+    sorobanRpcTimeoutMs: number;
   };
 
   /** Database */
@@ -119,6 +123,14 @@ export interface GatewayConfig {
      * `CONTRACT_ADMIN_SECRET` and an escrow contract funded by deposits.
      */
     escrowSettlementEnabled: boolean;
+    /**
+     * Opt-in provider payout automation via the multisig Soroban contract:
+     * the admin can propose payouts of confirmed provider revenue through the
+     * multisig wallet (M-of-N signer approval). Requires `CONTRACT_ADMIN_SECRET`
+     * and a deployed multisig contract. When disabled the payout endpoints are
+     * non-functional and no contract calls are made.
+     */
+    payoutAutomationEnabled: boolean;
   };
 
   /** Deployed Soroban contract addresses */
@@ -136,12 +148,6 @@ export interface GatewayConfig {
 
   /** Notification configuration */
   notifications: {
-    email: {
-      enabled: boolean;
-      smtpHost?: string;
-      smtpPort?: number;
-      fromAddress?: string;
-    };
     webhook: {
       enabled: boolean;
       retryCount: number;
@@ -186,6 +192,141 @@ const INSECURE_JWT_SECRETS = [
 ];
 
 /**
+ * Throw when the dev auth bypass would be active in production.
+ *
+ * AUTH_DEV_MODE accepts `dev-sig-` signatures that authenticate as ANY
+ * wallet. If it were left on in a production deploy, anyone who learned the
+ * convention could impersonate any provider wallet. Same fail-fast rationale
+ * as the JWT placeholder check — refuse to boot rather than run with the
+ * bypass enabled.
+ */
+function assertNoDevAuthInProduction(nodeEnv: string): void {
+  if (nodeEnv === 'production' && process.env.AUTH_DEV_MODE === 'true') {
+    throw new Error(
+      'AUTH_DEV_MODE=true is set but NODE_ENV=production. ' +
+        'AUTH_DEV_MODE accepts dev-sig- signatures as any wallet and must never ' +
+        'run in production. Set AUTH_DEV_MODE=false.',
+    );
+  }
+}
+
+interface StellarDefaults {
+  horizon: string;
+  rpc: string;
+  passphrase: string;
+  usdcIssuer: string;
+}
+
+/**
+ * Well-known per-network Stellar defaults.
+ */
+const STELLAR_NETWORK_DEFAULTS: Record<StellarNetwork, StellarDefaults> = {
+  testnet: {
+    horizon: 'https://horizon-testnet.stellar.org',
+    rpc: 'https://soroban-testnet.stellar.org',
+    passphrase: 'Test SDF Network ; September 2015',
+    usdcIssuer: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
+  },
+  mainnet: {
+    horizon: 'https://horizon.stellar.org',
+    rpc: 'https://soroban-mainnet.stellar.org',
+    passphrase: 'Public Global Stellar Network ; September 2015',
+    usdcIssuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+  },
+  futurenet: {
+    horizon: 'https://horizon-futurenet.stellar.org',
+    rpc: 'https://rpc-futurenet.stellar.org',
+    passphrase: 'Test SDF Future Network ; October 2022',
+    usdcIssuer: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
+  },
+};
+
+/**
+ * Host/URL fragments that identify a test or future network endpoint. A
+ * mainnet gateway must never be pointed at these: it would verify worthless
+ * testnet payments and serve real LLM compute for them. (Protocol-level
+ * replay is already impossible — Stellar signatures are passphrase-scoped —
+ * so operator config drift is the only realistic cross-network hazard.)
+ */
+const TEST_NETWORK_URL_MARKERS = ['testnet', 'futurenet'] as const;
+
+/**
+ * True when `url` looks like a test/future network endpoint (either by
+ * hostname marker or by matching a known SDF test endpoint exactly).
+ * Custom mainnet providers are allowed through.
+ */
+function isTestNetworkUrl(url: string): boolean {
+  const lower = url.toLowerCase();
+  if (TEST_NETWORK_URL_MARKERS.some((m) => lower.includes(m))) return true;
+  return (
+    lower === 'https://horizon-testnet.stellar.org' ||
+    lower === 'https://soroban-testnet.stellar.org' ||
+    lower === 'https://rpc-futurenet.stellar.org' ||
+    lower === 'https://horizon-futurenet.stellar.org'
+  );
+}
+
+/**
+ * Verify that a `STELLAR_NETWORK=mainnet` configuration points at mainnet
+ * infrastructure. A "mainnet" gateway whose Horizon/RPC URLs, passphrase, or
+ * USDC issuer actually belong to testnet would verify worthless testnet
+ * payments and serve real LLM compute for them — the realistic mainnet
+ * cross-network hazard (protocol-level replay is impossible because Stellar
+ * signatures are passphrase-scoped).
+ *
+ * Hard failures on mainnet: Horizon/RPC pointing at a test/future endpoint,
+ * a non-mainnet passphrase override, and any USDC issuer other than Circle's
+ * (accepting a different issuer would let callers pay with counterfeit
+ * tokens). A provider-specific mainnet Horizon/RPC override is silently
+ * allowed (custom mainnet infrastructure is legitimate); the well-known
+ * defaults are used when unset.
+ *
+ * Futurenet is treated as a test network: the guard only enforces
+ * consistency for mainnet.
+ */
+function assertMainnetNetworkConsistency(): void {
+  const network = (process.env.STELLAR_NETWORK as StellarNetwork) || 'testnet';
+  if (network !== 'mainnet') return;
+
+  const horizonUrl = process.env.HORIZON_URL || '';
+  if (horizonUrl && isTestNetworkUrl(horizonUrl)) {
+    throw new Error(
+      `HORIZON_URL is set to '${horizonUrl}' but STELLAR_NETWORK=mainnet. ` +
+        'Horizon must point at the mainnet network, not a test/future network. ' +
+        `The well-known mainnet endpoint is ${STELLAR_NETWORK_DEFAULTS.mainnet.horizon}.`,
+    );
+  }
+
+  const sorobanRpcUrl = process.env.SOROBAN_RPC_URL || '';
+  if (sorobanRpcUrl && isTestNetworkUrl(sorobanRpcUrl)) {
+    throw new Error(
+      `SOROBAN_RPC_URL is set to '${sorobanRpcUrl}' but STELLAR_NETWORK=mainnet. ` +
+        'The Soroban RPC must point at the mainnet network, not a test/future network. ' +
+        `The well-known mainnet RPC is ${STELLAR_NETWORK_DEFAULTS.mainnet.rpc}.`,
+    );
+  }
+
+  const passphrase = process.env.NETWORK_PASSPHRASE || '';
+  if (passphrase && passphrase !== STELLAR_NETWORK_DEFAULTS.mainnet.passphrase) {
+    throw new Error(
+      `NETWORK_PASSPHRASE is set to '${passphrase}' but STELLAR_NETWORK=mainnet. ` +
+        `The mainnet passphrase is '${STELLAR_NETWORK_DEFAULTS.mainnet.passphrase}'; ` +
+        'do not override it. A wrong passphrase would accept transactions ' +
+        'signed for a different network.',
+    );
+  }
+
+  const usdcIssuer = process.env.USDC_ISSUER || STELLAR_NETWORK_DEFAULTS.mainnet.usdcIssuer;
+  if (usdcIssuer !== STELLAR_NETWORK_DEFAULTS.mainnet.usdcIssuer) {
+    throw new Error(
+      `USDC_ISSUER is set to '${usdcIssuer}' but STELLAR_NETWORK=mainnet. ` +
+        `The mainnet USDC issuer (Circle) is ${STELLAR_NETWORK_DEFAULTS.mainnet.usdcIssuer}. ` +
+        'Accepting a different issuer on mainnet would let callers pay with counterfeit tokens.',
+    );
+  }
+}
+
+/**
  * Validate that required environment variables are set.
  * Call this at startup to fail fast with clear error messages.
  */
@@ -217,6 +358,13 @@ export function validateEnv(): void {
       'JWT_SECRET is set to a known insecure placeholder. Generate a real secret with: openssl rand -base64 32',
     );
   }
+
+  // Never boot a production gateway with the dev auth bypass enabled.
+  assertNoDevAuthInProduction(process.env.NODE_ENV || 'development');
+
+  // A mainnet gateway must not point at test/future chain endpoints, a
+  // foreign passphrase, or a non-Circle USDC issuer.
+  assertMainnetNetworkConsistency();
 
   const missing = required.filter((r) => !r.value);
   if (missing.length > 0) {
@@ -256,29 +404,9 @@ export function loadConfig(): GatewayConfig {
   const nodeEnv = (process.env.NODE_ENV as GatewayConfig['nodeEnv']) || 'development';
   const network = (process.env.STELLAR_NETWORK as StellarNetwork) || 'testnet';
 
-  const networkConfigs: Record<
-    StellarNetwork,
-    { horizon: string; rpc: string; passphrase: string; usdcIssuer: string }
-  > = {
-    testnet: {
-      horizon: 'https://horizon-testnet.stellar.org',
-      rpc: 'https://soroban-testnet.stellar.org',
-      passphrase: 'Test SDF Network ; September 2015',
-      usdcIssuer: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
-    },
-    mainnet: {
-      horizon: 'https://horizon.stellar.org',
-      rpc: 'https://soroban-mainnet.stellar.org',
-      passphrase: 'Public Global Stellar Network ; September 2015',
-      usdcIssuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
-    },
-    futurenet: {
-      horizon: 'https://horizon-futurenet.stellar.org',
-      rpc: 'https://rpc-futurenet.stellar.org',
-      passphrase: 'Test SDF Future Network ; October 2022',
-      usdcIssuer: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
-    },
-  };
+  // Shared per-network defaults (also used by the mainnet-consistency guard
+  // and by validateEnv).
+  const networkConfigs = STELLAR_NETWORK_DEFAULTS;
 
   // JWT_SECRET is required in every non-test environment (fail fast so a
   // misconfigured deploy can never silently run with a known default secret).
@@ -296,6 +424,15 @@ export function loadConfig(): GatewayConfig {
     }
   }
 
+  // Same guard as validateEnv — getConfig()/loadConfig() must also fail fast
+  // if the dev auth bypass would be active in production.
+  assertNoDevAuthInProduction(nodeEnv);
+
+  // Refuse to boot a mainnet gateway whose chain configuration actually
+  // points at a test/future network, a foreign passphrase, or a non-Circle
+  // USDC issuer.
+  assertMainnetNetworkConsistency();
+
   return {
     port: parseInt(process.env.PORT || '3000', 10),
     host: process.env.HOST || '0.0.0.0',
@@ -307,6 +444,8 @@ export function loadConfig(): GatewayConfig {
       horizonUrl: process.env.HORIZON_URL || networkConfigs[network].horizon,
       sorobanRpcUrl: process.env.SOROBAN_RPC_URL || networkConfigs[network].rpc,
       networkPassphrase: networkConfigs[network].passphrase,
+      horizonTimeoutMs: parseInt(process.env.HORIZON_TIMEOUT_MS || '10000', 10),
+      sorobanRpcTimeoutMs: parseInt(process.env.SOROBAN_RPC_TIMEOUT_MS || '10000', 10),
     },
 
     database: {
@@ -330,6 +469,7 @@ export function loadConfig(): GatewayConfig {
       minPaymentAmount: process.env.MIN_PAYMENT_AMOUNT || '10000', // 0.00001 XLM in stroops
       contractAdminSecret: process.env.CONTRACT_ADMIN_SECRET || undefined,
       escrowSettlementEnabled: process.env.ESCROW_SETTLEMENT_ENABLED === 'true',
+      payoutAutomationEnabled: process.env.PAYOUT_AUTOMATION_ENABLED === 'true',
     },
 
     llm: {
@@ -341,12 +481,6 @@ export function loadConfig(): GatewayConfig {
     },
 
     notifications: {
-      email: {
-        enabled: process.env.EMAIL_ENABLED === 'true',
-        smtpHost: process.env.SMTP_HOST,
-        smtpPort: parseInt(process.env.SMTP_PORT || '587', 10),
-        fromAddress: process.env.EMAIL_FROM,
-      },
       webhook: {
         enabled: process.env.WEBHOOK_ENABLED !== 'false',
         retryCount: parseInt(process.env.WEBHOOK_RETRY_COUNT || '3', 10),

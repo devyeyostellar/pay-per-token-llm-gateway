@@ -12,7 +12,7 @@ permissions:
   actions: read
 
 env:
-  PNPM_VERSION: latest
+  PNPM_VERSION: '11.24.0'
   STELLAR_CLI_VERSION: '27.1.0'
 
 jobs:
@@ -78,6 +78,46 @@ jobs:
             x402/dashboard:${{ steps.version.outputs.VERSION }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  sbom:
+    needs: [check-ci]
+    name: Generate SBOM
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # upload SBOM as a release asset
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read Node version from .nvmrc
+        id: nvm
+        run: echo "NODE_VERSION=$(cat .nvmrc)" >> $GITHUB_OUTPUT
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.nvm.outputs.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+
+      # CycloneDX SBOM covering the JS workspace (pnpm-lock.yaml) and the
+      # Rust contracts (Cargo.lock). Attached to the release automatically.
+      - name: Generate SBOM (CycloneDX JSON)
+        uses: anchore/sbom-action@v0
+        with:
+          path: ./
+          format: cyclonedx-json
+          output-file: x402-gateway-sbom.cdx.json
+
+      - name: Attach SBOM to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release upload "$TAG" x402-gateway-sbom.cdx.json --clobber
 
   deploy_contracts:
     needs: [check-ci]
