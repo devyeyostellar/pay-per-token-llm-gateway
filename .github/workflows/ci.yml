@@ -7,7 +7,11 @@ on:
     branches: [main]
 
 env:
-  PNPM_VERSION: '11'
+  # Pinned to an exact version: floating '11' resolved to a pnpm release that
+  # requires Node >= 22.13, which crashed on the then-pinned Node 20 runners
+  # (ERR_UNKNOWN_BUILTIN_MODULE: node:sqlite). Keep in sync with the
+  # `packageManager` field in package.json and .nvmrc (Node 22+).
+  PNPM_VERSION: '11.24.0'
 
 jobs:
   lint:
@@ -195,10 +199,16 @@ jobs:
       # Reproduce the documented quickstart exactly: copy the example env file,
       # fill in a real JWT_SECRET, and assert the gateway config loads from it.
       # Guards against regressions in @x402/config .env loading.
+      #
+      # The template ships dev defaults (NODE_ENV=development, localhost
+      # Redis), which validateEnv() rightly rejects under NODE_ENV=production.
+      # To exercise the production path we replace the localhost REDIS_URL the
+      # way an operator would before deploy, then assert .env → config loads.
       - name: Create .env from example with a real JWT_SECRET
         run: |
           cp .env.example .env
           sed -i "s|^JWT_SECRET=$|JWT_SECRET=$(openssl rand -base64 32)|" .env
+          sed -i "s|^REDIS_URL=redis://localhost:6379|REDIS_URL=redis://prod-redis.internal:6379|" .env
 
       - name: Assert gateway config validates from .env
         run: |
@@ -372,10 +382,18 @@ jobs:
 
       # Scans the full commit history for leaked secrets (API keys, private
       # keys, Stellar secrets) and fails the build when one is found.
+      # gitleaks/gitleaks-action@v2 requires a paid GITLEAKS_LICENSE for
+      # organization repositories, so run the OSS CLI (MIT) directly instead.
+      # Scans the full commit history; fails on any real leak. The only
+      # findings are documented test/doc fixtures, whitelisted in
+      # .gitleaksignore.
       - name: Run gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/repo" \
+            -w /repo \
+            ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            git --redact=100 --verbose --exit-code 1
 
   trivy:
     name: Vulnerability Scan (trivy)
@@ -392,7 +410,7 @@ jobs:
       # the hard gate is the `security` job's critical-level pnpm audit.
       # Findings land in the GitHub Security tab via SARIF.
       - name: Run Trivy (fs)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           scan-type: fs
           scan-ref: .
@@ -416,7 +434,7 @@ jobs:
       # Scans all lockfiles (pnpm-lock.yaml, contracts Cargo.lock) against
       # the OSV database. Report-only — see the `security` job for the gate.
       - name: Run OSV scanner
-        uses: google/osv-scanner-action/osv-scanner-action@v1
+        uses: google/osv-scanner-action/osv-scanner-action@v2.5.1
         with:
           fail-on-vuln: false
 

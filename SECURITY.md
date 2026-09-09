@@ -97,15 +97,16 @@ payment.
 | SBOM (CycloneDX, per release)             | anchore sbom-action       | release asset                                                       |
 | Install-script allowlist                  | pnpm `allowBuilds`        | only prisma/esbuild/nx/@nestjs-core/@parcel-watcher may run scripts |
 
-Dependency posture (2026-09-08): **0 critical** and **0 runtime-reachable**
+Dependency posture (2026-09-09): **0 critical** and **0 runtime-reachable**
 advisories. The gateway runs **NestJS 11.2.3 on Express 5.2.1** (with multer
-2.2.0 pinned by platform-express) and the dashboard runs **Next 15.5.25 +
-React 19** — the three previously-tracked major-version residuals are
-resolved, and the nx 22 migration cleared the remaining dev-tooling track
-(`brace-expansion` fixed via scoped override). `pnpm audit` now reports **2
-high advisories, both `image-size`** — dev/build-tooling only, via the unused
-`@nx/vite`→less chain, no patched release exists, no runtime-reachable path —
-see `MAINNET_READINESS.md` §7.
+**2.3.0** via override — the 2026 DoS CVEs affect <2.3.0) and the dashboard
+runs **Next 15.5.25 + React 19** — the three previously-tracked major-version
+residuals are resolved, the nx 22 migration cleared the remaining
+dev-tooling track (`brace-expansion` fixed via scoped override), and
+`svgo` was bumped to 3.3.5 (ReDoS patched) via a scoped override. `pnpm
+audit` now reports **2 high advisories, both `image-size`** — dev/build-tooling
+only, via the unused `@nx/vite`→less chain, no patched release exists, no
+runtime-reachable path — see `MAINNET_READINESS.md` §7.
 
 ## Known Residual Risks
 

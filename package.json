@@ -2,6 +2,7 @@
   "name": "x402-llm-gateway",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@11.24.0",
   "description": "Pay-per-request LLM gateway using x402 stablecoin micropayments on Stellar",
   "workspaces": [
     "apps/*",

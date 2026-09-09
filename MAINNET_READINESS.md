@@ -195,7 +195,7 @@ gate, distinct from the README's generic production checklist.
 
 - [x] `UnderpaymentDebt` covered by the migration history
       (`20260909000000_add_underpayment_debt_drop_legacy`) — `prisma
-    migrate deploy` on a fresh database produces the full schema, verified
+  migrate deploy` on a fresh database produces the full schema, verified
       by the backup/restore drill in CI.
 - [ ] `AUTH_DEV_MODE` unset/false in the mainnet environment (boot guard
       enforced).
@@ -220,18 +220,26 @@ gate, distinct from the README's generic production checklist.
 resolved by major-version upgrades (verified: gateway unit + e2e suites and
 dashboard build all green on the new stacks):
 
-| Package                           | Before                    | After                                           | Notes                                                                              |
-| --------------------------------- | ------------------------- | ----------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `next` (dashboard)                | 14.2 (high, <15.5.21)     | **15.5.25** + React 19 / recharts 2.15          | dashboard has no auth middleware, so the middleware-bypass class never applied     |
-| `@nestjs/core` / platform-express | 10.3 (moderate, <11.1.18) | **11.2.3** on Express 5.2.1                     | Express 5: no wildcard routes or `req.query` mutation in gateway → clean migration |
-| `multer` (via platform-express)   | 1.4.x (high, <2.2.0)      | **2.2.0** (pinned by platform-express 11.1.28+) | gateway exposes no file-upload endpoints; ESM/CJS constraint lifted by NestJS 11   |
+| Package                           | Before                    | After                                  | Notes                                                                                                                                        |
+| --------------------------------- | ------------------------- | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `next` (dashboard)                | 14.2 (high, <15.5.21)     | **15.5.25** + React 19 / recharts 2.15 | dashboard has no auth middleware, so the middleware-bypass class never applied                                                               |
+| `@nestjs/core` / platform-express | 10.3 (moderate, <11.1.18) | **11.2.3** on Express 5.2.1            | Express 5: no wildcard routes or `req.query` mutation in gateway → clean migration                                                           |
+| `multer` (via platform-express)   | 1.4.x (high, <2.2.0)      | **2.3.0** (override; 2026-09-09)       | 2026 DoS CVEs (CVE-2026-77037/77078/82333) affect <2.3.0, so the 2.2.0 pin was overridden to 2.3.0; gateway exposes no file-upload endpoints |
 
 **Updated 2026-09-08 (after the nx 22 migration)** — the `nx` 19.5.7 and
 `webpack-dev-server` tracks above are **resolved** by the nx 22.7.9 migration
 (which also cleared `brace-expansion` via a scoped override to 5.0.9, and
 `minimatch`/`test-exclude` via overrides). `pnpm audit` now reports **2 high
 advisories, both `image-size`** — dev/build-tooling only, never shipped to
-runtime, no runtime-reachable path:
+runtime, no runtime-reachable path.
+
+**Updated 2026-09-09** — osv-scanner surfaced new advisories that landed
+after the audit above: `multer <2.3.0` (3 DoS CVEs, runtime via
+platform-express) and `svgo 3.3.4` (2 ReDoS advisories, build-tooling via
+`@svgr/plugin-svgo`). Both resolved with installable patched releases via
+`pnpm-workspace.yaml` overrides (`multer >=2.3.0`, `@svgr/plugin-svgo>svgo
+
+> =3.3.5`), verified by the local matrix. `pnpm audit` remains **0 critical**;
 
 | Package           | Severity | Why not fixed                                                                                                                                                                                         | Track                                                                         |
 | ----------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |

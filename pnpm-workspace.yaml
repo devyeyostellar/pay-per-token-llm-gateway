@@ -35,9 +35,11 @@ allowBuilds:
 #   - body-parser: invalid-limit DoS (GHSA-v422-hmwv-36x6), fixed in 1.20.6
 #
 # Runtime-reachable transitive advisories with installable patched releases.
-# @nestjs/core and multer are resolved patched via the NestJS 11 upgrade
-# (platform-express >=11.1.28 pins multer 2.2.0); next via the dashboard's
-# Next 15 upgrade. See MAINNET_READINESS.md for the residual ledger.
+#   - multer: DoS CVEs (CVE-2026-77037 / 77078 / 82333) affect <2.3.0;
+#     platform-express pins the vulnerable 2.2.0, so force 2.3.0 via override
+#   - svgo: ReDoS advisories (GHSA-4vpr-x523-8j87 / GHSA-w27v-7q3p-w38r)
+#     affect 3.3.4, patched in 3.3.5 — scoped to the SVGR build chain only
+# See MAINNET_READINESS.md for the residual ledger.
 overrides:
   koa: '>=2.15.4'
   # NestJS 11 platform-express is built against Express 5 (declares 5.2.1);
@@ -50,6 +52,11 @@ overrides:
   # uuid <12 keeps the CommonJS build (12+ is ESM-only and would break the
   # CJS NestJS integration); 11.1.1 is the advisory's patched floor.
   uuid: '>=11.1.1 <12'
+  multer: '>=2.3.0'
+  # svgo ReDoS (GHSA-w27v-7q3p-w38r, GHSA-4vpr-x523-8j87) patched in 3.3.5;
+  # scoped to @svgr/plugin-svgo's ^3 range (a forced 4.x jump would be an
+  # unverified API change for the plugin); postcss-svgo keeps its own svgo 4.
+  '@svgr/plugin-svgo>svgo': '>=3.3.5 <4'
   lodash: '>=4.18.1'
   js-yaml: '>=4.3.1'
   toml: '>=4.2.0'

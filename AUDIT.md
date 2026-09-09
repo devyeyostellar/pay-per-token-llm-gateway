@@ -125,8 +125,13 @@ blocker) and **Next 14 → 15.5.25** (React 19, recharts 2.15.4). Result:
 **2 high advisories (0 critical, 0 runtime-reachable)** — remaining are
 dev/build-tooling only, both `image-size` (no patched release exists; unused
 `@nx/vite`→less chain). The nx 22 migration (2026-09-08) cleared the `nx`
-19.5.7 / `webpack-dev-server` 4 / `brace-expansion` tracks. Tracks:
-`MAINNET_READINESS.md` §7.
+19.5.7 / `webpack-dev-server` 4 / `brace-expansion` tracks.
+
+Follow-up (2026-09-09): osv-scanner surfaced **multer <2.3.0 DoS CVEs**
+(CVE-2026-77037/77078/82333, runtime via platform-express) and **svgo 3.3.4
+ReDoS** (build-tooling via @svgr/plugin-svgo) — both fixed with installable
+patched releases via new `pnpm-workspace.yaml` overrides (`multer >=2.3.0`,
+`@svgr/plugin-svgo>svgo >=3.3.5`). Tracks: `MAINNET_READINESS.md` §7.
 
 ### F9 — CI security pipeline
 

@@ -1,0 +1,16 @@
+# Gitleaks allowlist — documented test/doc fixtures, not real secrets.
+#
+# These fingerprints were produced by `gitleaks git` (v8.30.1) against the
+# full commit history. Each is an obviously fake credential:
+#   - '0123456789abcdef0123456789abcdef' — placeholder hex webhook secret used
+#     in unit-test fixtures (providers.service.spec.ts, webhooks.service.spec.ts)
+#   - 'Bearer YOUR_JWT_TOKEN' — placeholder auth header in DEPLOYMENT.md curl
+#     examples
+#
+# Format: <commit-sha>:<file>:<rule-id>:<line>
+
+6ad15f4db3cd66094ff4dc0eb6f7d98392a5e54a:apps/gateway/src/modules/providers/providers.service.spec.ts:generic-api-key:143
+6ad15f4db3cd66094ff4dc0eb6f7d98392a5e54a:apps/gateway/src/modules/providers/providers.service.spec.ts:generic-api-key:153
+6ad15f4db3cd66094ff4dc0eb6f7d98392a5e54a:apps/gateway/src/modules/webhooks/webhooks.service.spec.ts:generic-api-key:208
+9c5509ed388fae339b5c0ce642bf56b09ec314c8:DEPLOYMENT.md:curl-auth-header:106
+9c5509ed388fae339b5c0ce642bf56b09ec314c8:DEPLOYMENT.md:curl-auth-header:119
