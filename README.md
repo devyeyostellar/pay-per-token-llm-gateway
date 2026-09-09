@@ -7,7 +7,7 @@
 <p align="center">
   <strong>Pay-per-request LLM gateway with stablecoin micropayments on Stellar.</strong>
   <br />
-  No API keys. No subscriptions. No rate limits.
+  No API keys. No subscriptions. Minimal rate limits.
   <br />
   Just pay USDC on-chain and access any LLM endpoint.
 </p>
@@ -486,15 +486,11 @@ Requires M-of-N signer approval for provider payouts:
 ### Deploying Contracts
 
 ```bash
-cargo install --locked stellar-cli --features opt
-
-cd contracts/payment-verifier
-stellar contract build
-stellar contract deploy \
-  --wasm target/wasm32-unknown-unknown/release/payment_verifier.wasm \
-  --source S... \
-  --network testnet
+bash scripts/build-contracts.sh
+STELLAR_NETWORK=testnet STELLAR_SECRET_KEY=S... bash scripts/deploy-contracts.sh
 ```
+
+`deploy-contracts.sh` builds all three contracts, deploys them to the target network, and records the contract IDs in `contracts/deployed-addresses.json` (gitignored — it is a per-environment deploy artifact). The gateway reads this file at startup via `@x402/config` and falls back to hardcoded testnet IDs when it is missing.
 
 The contracts store unbounded state (payment audit trail, escrow
 balances/usage, multisig proposals) as individual **persistent ledger

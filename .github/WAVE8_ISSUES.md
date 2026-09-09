@@ -38,13 +38,13 @@ Per-token pricing detects underpayment (`applyMeteredPricing` logs `isUnderpaid`
 
 ### Acceptance Criteria
 
-- [ ] When `ESCROW_SETTLEMENT_ENABLED=true`, a per-token request that completes successfully calls `charge(user, quoteId, actualCost)` on-chain
-- [ ] Surplus deposits trigger `refund(user, quoteId, surplus)` on-chain
-- [ ] When `ESCROW_SETTLEMENT_ENABLED=false`, the gateway logs a warning and skips settlement (no crash)
-- [ ] Settlement calls are idempotent (contract already supports this — verify no double-charge)
-- [ ] Unit tests cover both enabled/disabled paths (`x402.service.spec.ts`)
-- [ ] E2E test covers the settlement flow (mock the contract client)
-- [ ] `pnpm exec nx test gateway` passes with 100% of new code covered
+- [x] When `ESCROW_SETTLEMENT_ENABLED=true`, a per-token request that completes successfully calls `charge(user, quoteId, actualCost)` on-chain
+- [x] Surplus deposits trigger `refund(user, quoteId, surplus)` on-chain
+- [x] When `ESCROW_SETTLEMENT_ENABLED=false`, the gateway logs a warning and skips settlement (no crash)
+- [x] Settlement calls are idempotent (contract already supports this — verify no double-charge)
+- [x] Unit tests cover both enabled/disabled paths (`x402.service.spec.ts`)
+- [x] E2E test covers the settlement flow (mock the contract client)
+- [x] `pnpm exec nx test gateway` passes with 100% of new code covered
 
 ---
 
@@ -90,13 +90,13 @@ The README and `@x402/types` advertise "Stellar wallet integration (secret key o
 
 ### Acceptance Criteria
 
-- [ ] `X402Client` with `signTransaction` callback (no `secretKey`) calls the callback with a valid `txXdr`
-- [ ] The signed XDR is submitted to Horizon and confirmed
-- [ ] The returned `PaymentResult` matches the same shape as the `secretKey` path
-- [ ] Error handling: invalid XDR, rejected signing, failed submission all return `{ success: false, error: string }`
-- [ ] Existing `secretKey` path continues to work unchanged
-- [ ] Unit tests for both `secretKey` and `signTransaction` paths
-- [ ] `pnpm exec nx test sdk` passes (add Jest config if missing)
+- [x] `X402Client` with `signTransaction` callback (no `secretKey`) calls the callback with a valid `txXdr`
+- [x] The signed XDR is submitted to Horizon and confirmed
+- [x] The returned `PaymentResult` matches the same shape as the `secretKey` path
+- [x] Error handling: invalid XDR, rejected signing, failed submission all return `{ success: false, error: string }`
+- [x] Existing `secretKey` path continues to work unchanged
+- [x] Unit tests for both `secretKey` and `signTransaction` paths
+- [x] `pnpm exec nx test sdk` passes (add Jest config if missing)
 
 ---
 
@@ -137,13 +137,13 @@ A caller can pass `limit = u32::MAX` and `offset = 0` — the loop iterates up t
 
 ### Acceptance Criteria
 
-- [ ] `get_payments(offset=0, limit=u32::MAX)` returns at most 100 entries
-- [ ] `get_usage(offset=0, limit=999999)` returns at most 100 entries
-- [ ] `get_proposals(offset=0, limit=0)` returns 0 entries
-- [ ] `offset.saturating_add(limit)` is used — no `u32` overflow possible
-- [ ] Existing pagination tests still pass with adjusted expectations
-- [ ] Add a test that passes `limit = u32::MAX` and verifies the clamp
-- [ ] `cargo test` passes for all three contracts
+- [x] `get_payments(offset=0, limit=u32::MAX)` returns at most 100 entries
+- [x] `get_usage(offset=0, limit=999999)` returns at most 100 entries
+- [x] `get_proposals(offset=0, limit=0)` returns 0 entries
+- [x] `offset.saturating_add(limit)` is used — no `u32` overflow possible
+- [x] Existing pagination tests still pass with adjusted expectations
+- [x] Add a test that passes `limit = u32::MAX` and verifies the clamp
+- [x] `cargo test` passes for all three contracts
 
 ---
 
@@ -256,12 +256,12 @@ Non-streaming responses include `X-Payment-Receipt`, `X-Actual-Cost`, and `X-Sur
 
 ### Acceptance Criteria
 
-- [ ] Upstream hostname is resolved and validated at request-forwarding time
-- [ ] DNS results are cached for 60 seconds per hostname (subsequent requests to same host skip re-resolution)
-- [ ] If validation fails (hostname now resolves to a private IP), the gateway returns 502 and does NOT forward the request
-- [ ] A `proxy.dns_rebind_blocked` audit event is logged
-- [ ] Existing tests pass; add a unit test that injects a mock DNS resolver returning a private IP
-- [ ] `pnpm exec nx test gateway` passes
+- [x] Upstream hostname is resolved and validated at request-forwarding time
+- [x] DNS results are cached for 60 seconds per hostname (subsequent requests to same host skip re-resolution)
+- [x] If validation fails (hostname now resolves to a private IP), the gateway returns 502 and does NOT forward the request
+- [x] A `proxy.dns_rebind_blocked` audit event is logged
+- [x] Existing tests pass; add a unit test that injects a mock DNS resolver returning a private IP
+- [x] `pnpm exec nx test gateway` passes
 
 ---
 
@@ -339,12 +339,12 @@ The Next.js dashboard has **zero unit tests**. The `apps/dashboard/project.json`
 
 ### Acceptance Criteria
 
-- [ ] `pnpm exec nx test dashboard` runs and passes
-- [ ] At least 4 page-level smoke tests exist
-- [ ] `Sidebar` component has tests for link rendering and active route highlighting
-- [ ] Tests mock external dependencies (`next/navigation`, wallet providers, API calls)
-- [ ] `coverageThreshold` ≥ 60% statements for dashboard
-- [ ] CI workflow (`ci.yml`) includes the dashboard test step
+- [x] `pnpm exec nx test dashboard` runs and passes
+- [x] At least 4 page-level smoke tests exist
+- [x] `Sidebar` component has tests for link rendering and active route highlighting
+- [x] Tests mock external dependencies (`next/navigation`, wallet providers, API calls)
+- [x] `coverageThreshold` ≥ 60% statements for dashboard
+- [x] CI workflow (`ci.yml`) includes the dashboard test step
 
 ---
 
@@ -379,13 +379,13 @@ The Next.js dashboard has **zero unit tests**. The `apps/dashboard/project.json`
 
 ### Acceptance Criteria
 
-- [ ] When `EMAIL_ENABLED=true`, notification events with email targets are delivered via SMTP
-- [ ] When `EMAIL_ENABLED=false`, email handler is not registered (no-op)
-- [ ] SMTP connection failures are caught and logged; the gateway does not crash
-- [ ] Email subject/body include relevant event details (event type, payment amount, timestamp)
-- [ ] Unit tests mock nodemailer transport and verify `sendMail` is called with correct params
-- [ ] `pnpm exec nx test notifications` passes
-- [ ] `pnpm install` succeeds with nodemailer added
+- [x] When `EMAIL_ENABLED=true`, notification events with email targets are delivered via SMTP
+- [x] When `EMAIL_ENABLED=false`, email handler is not registered (no-op)
+- [x] SMTP connection failures are caught and logged; the gateway does not crash
+- [x] Email subject/body include relevant event details (event type, payment amount, timestamp)
+- [x] Unit tests mock nodemailer transport and verify `sendMail` is called with correct params
+- [x] `pnpm exec nx test notifications` passes
+- [x] `pnpm install` succeeds with nodemailer added
 
 ---
 
@@ -418,11 +418,11 @@ The credit-escrow contract's test suite covers happy-path deposit/charge/refund/
 
 ### Acceptance Criteria
 
-- [ ] At least one invariant test that performs a multi-step sequence and asserts the balance equation after each step
-- [ ] Test covers: deposit→charge→refund, deposit→refund(uncharged), deposit→charge→charge(idempotent), multi-user scenarios
-- [ ] If the invariant fails, the contract code is fixed (not just the test)
-- [ ] `cargo test -p credit-escrow` passes
-- [ ] All existing 34 tests remain green
+- [x] At least one invariant test that performs a multi-step sequence and asserts the balance equation after each step
+- [x] Test covers: deposit→charge→refund, deposit→refund(uncharged), deposit→charge→charge(idempotent), multi-user scenarios
+- [x] If the invariant fails, the contract code is fixed (not just the test)
+- [x] `cargo test -p credit-escrow` passes
+- [x] All existing 34 tests remain green
 
 ---
 
@@ -460,12 +460,12 @@ The `multisig` Soroban contract (`contracts/multisig`) implements `propose` / `a
 
 ### Acceptance Criteria
 
-- [ ] `multisig-client.ts` can propose/approve against a deployed testnet contract (or is fully mocked)
-- [ ] Pending provider revenue is computed from `Payment` rows, wallet-scoped
-- [ ] Payouts are only visible to the provider owner's wallet
-- [ ] `PAYOUT_AUTOMATION_ENABLED=false` → no crash, no contract calls
-- [ ] Unit tests with a mocked contract client cover propose/approve/list
-- [ ] `pnpm exec nx test gateway` passes
+- [x] `multisig-client.ts` can propose/approve against a deployed testnet contract (or is fully mocked)
+- [x] Pending provider revenue is computed from `Payment` rows, wallet-scoped
+- [x] Payouts are only visible to the provider owner's wallet
+- [x] `PAYOUT_AUTOMATION_ENABLED=false` → no crash, no contract calls
+- [x] Unit tests with a mocked contract client cover propose/approve/list
+- [x] `pnpm exec nx test gateway` passes
 
 ---
 
@@ -664,11 +664,11 @@ The `multisig` Soroban contract (`contracts/multisig`) implements `propose` / `a
 
 ### Acceptance Criteria
 
-- [ ] `pnpm exec nx test sdk` passes
-- [ ] 402→pay→retry covered end-to-end at the SDK level (mocked network)
-- [ ] Streaming receipt parsing covered
-- [ ] Both `secretKey` and `signTransaction` paths covered
-- [ ] Coverage threshold enforced in CI
+- [x] `pnpm exec nx test sdk` passes
+- [x] 402→pay→retry covered end-to-end at the SDK level (mocked network)
+- [x] Streaming receipt parsing covered
+- [x] Both `secretKey` and `signTransaction` paths covered
+- [x] Coverage threshold enforced in CI
 
 ---
 
@@ -751,9 +751,9 @@ The Prisma schema defines `Session` and `ApiKey` models, but neither is used: se
 
 | #   | Issue                                       | Area                | Complexity | Status  | Labels                                             |
 | --- | ------------------------------------------- | ------------------- | ---------- | ------- | -------------------------------------------------- |
-| 1   | Wire credit-escrow settlement               | gateway + contracts | High       | open    | `enhancement` `priority:high`                      |
-| 2   | SDK external signer                         | SDK                 | Medium     | open    | `bug` `priority:high`                              |
-| 3   | Clamp unbounded pagination limits           | contracts           | Medium     | open    | `bug` `security` `priority:medium`                 |
+| 1   | Wire credit-escrow settlement               | gateway + contracts | High       | ✅ done | `enhancement` `priority:high`                      |
+| 2   | SDK external signer                         | SDK                 | Medium     | ✅ done | `bug` `priority:high`                              |
+| 3   | Clamp unbounded pagination limits           | contracts           | Medium     | ✅ done | `bug` `security` `priority:medium`                 |
 | 4   | Remove extend_ttl from reads                | contracts           | Medium     | open    | `enhancement` `priority:medium`                    |
 | 5   | Streaming receipt headers                   | gateway + SDK       | Medium     | open    | `bug` `priority:medium`                            |
 | 6   | DNS rebinding protection at proxy time      | gateway             | Medium     | ✅ done | `bug` `security` `priority:medium`                 |
@@ -761,21 +761,21 @@ The Prisma schema defines `Session` and `ApiKey` models, but neither is used: se
 | 8   | Dashboard unit tests                        | dashboard           | Medium     | ✅ done | `enhancement` `priority:medium` `good first issue` |
 | 9   | Wire email notification channel             | notifications       | Medium     | ✅ done | `enhancement` `priority:medium`                    |
 | 10  | Escrow accounting invariant tests           | contracts           | Medium     | ✅ done | `enhancement` `priority:medium`                    |
-| 11  | Multisig payout automation                  | gateway + contracts | High       | open    | `enhancement` `priority:high`                      |
+| 11  | Multisig payout automation                  | gateway + contracts | High       | ✅ done | `enhancement` `priority:high`                      |
 | 12  | Explicit TRUST_PROXY + wallet rate limiting | gateway             | Medium     | open    | `bug` `security` `priority:medium`                 |
 | 13  | Payout wallet validation + approval flow    | gateway             | Medium     | open    | `enhancement` `security` `priority:medium`         |
 | 14  | Postgres-backed in-app notifications        | notifications       | Medium     | open    | `enhancement` `priority:medium`                    |
 | 15  | SQL time-series bucketing                   | gateway             | Medium     | open    | `enhancement` `priority:medium` `good first issue` |
-| 16  | SDK unit tests                              | SDK                 | Medium     | open    | `enhancement` `priority:medium` `good first issue` |
+| 16  | SDK unit tests                              | SDK                 | Medium     | ✅ done | `enhancement` `priority:medium` `good first issue` |
 | 17  | Receipt route field                         | gateway             | Trivial    | open    | `bug` `trivial` `good first issue`                 |
 | 18  | Remove unused Session/ApiKey models         | database            | Trivial    | open    | `enhancement` `trivial` `good first issue`         |
 
 **All 18 issues should carry:** `Stellar Wave` `GrantFox OSS` `Maybe Rewarded`
 
-**Point allocation (open issues):** 2× High (200×2) + 9× Medium (150×9) + 3× Trivial (100×3) = **2,050 total points**
+**Point allocation (open issues):** 0× High + 8× Medium (150×8) + 3× Trivial (100×3) = **1,500 total points**
 
-**Implemented/closed:** 4 of 18 issues (DNS rebinding, dashboard tests, email notifications, escrow invariants) are implemented — a strong "active project" signal for grant reviewers.
+**Implemented/closed:** 7 of 18 issues — a strong "active project" signal for grant reviewers.
 
 ---
 
-_Prepared for Wave 8 / GrantFox submission — August 2026_
+_Prepared for Wave 8 / GrantFox submission — August 2026 · Updated September 9, 2026_
