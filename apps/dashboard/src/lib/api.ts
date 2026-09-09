@@ -1,57 +1,75 @@
 /**
  * Gateway API client.
  * Calls the NestJS gateway directly (CORS is configured for dashboard origin).
+ *
+ * Auth strategy (defense in depth):
+ *   1. httpOnly cookie — primary, works same-origin (localhost dev,
+ *      Vercel + Railway production with HTTPS). Set by /auth/verify.
+ *   2. Authorization header — fallback for cross-origin deployments
+ *      where cookies can't be sent (Vercel HTTPS → localhost HTTP).
+ *      Token is stored in memory only, never localStorage (XSS-safe).
  */
 const GATEWAY_URL = process.env.NEXT_PUBLIC_GATEWAY_URL || 'http://localhost:3000';
 const BASE = `${GATEWAY_URL}/api/v1`;
 
-/** Get the stored session token */
-function getSessionToken(): string | null {
-  if (typeof window === 'undefined') return null;
-  return localStorage.getItem('x402-session-token');
-}
+/**
+ * In-memory session token for cross-origin fallback.
+ * Cleared on page refresh — not persistent, not accessible to XSS.
+ */
+let sessionToken: string | null = null;
 
-/** Store the session token */
+/** Store the session token in memory (cross-origin fallback). */
 export function setSessionToken(token: string): void {
-  if (typeof window !== 'undefined') {
-    localStorage.setItem('x402-session-token', token);
-  }
+  sessionToken = token;
 }
 
-/** Clear the session token */
-export function clearSessionToken(): void {
-  if (typeof window !== 'undefined') {
-    localStorage.removeItem('x402-session-token');
-    localStorage.removeItem('x402-wallet-address');
-  }
-}
-
-/** Store the connected wallet address */
+/** Store the connected wallet address (UI display only, not a secret). */
 export function setWalletAddress(address: string): void {
   if (typeof window !== 'undefined') {
     localStorage.setItem('x402-wallet-address', address);
   }
 }
 
-/** Get the stored wallet address */
+/** Get the stored wallet address (UI display only). */
 export function getWalletAddress(): string | null {
   if (typeof window === 'undefined') return null;
   return localStorage.getItem('x402-wallet-address');
 }
 
+/**
+ * Check for a legacy localStorage session token from before the httpOnly
+ * cookie migration. If found, it is consumed once for migration then removed.
+ */
+function consumeLegacyToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  const token = localStorage.getItem('x402-session-token');
+  if (token) {
+    localStorage.removeItem('x402-session-token');
+    sessionToken = token;
+  }
+  return token;
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const token = getSessionToken();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...((options?.headers as Record<string, string>) || {}),
   };
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
+
+  // Migration: consume any legacy localStorage token into in-memory store.
+  consumeLegacyToken();
+
+  // Cross-origin fallback: send the token as Authorization header.
+  // The gateway checks the httpOnly cookie first (primary); this header
+  // covers deployments where cookies can't be sent cross-origin.
+  if (sessionToken && !headers['Authorization']) {
+    headers['Authorization'] = `Bearer ${sessionToken}`;
   }
 
   const res = await fetch(`${BASE}${path}`, {
     ...options,
     headers,
+    credentials: 'include',
   });
 
   if (!res.ok) {
@@ -70,7 +88,10 @@ export interface ChallengeResponse {
 }
 
 export interface VerifyResponse {
-  token: string;
+  verified: boolean;
+  address: string;
+  /** JWT session token (for cross-origin Authorization header fallback). */
+  token?: string;
 }
 
 export interface SessionResponse {
@@ -90,6 +111,8 @@ export function verifyChallenge(
   address: string,
   signature: string,
 ): Promise<VerifyResponse> {
+  // The gateway sets an httpOnly cookie (x402-session) and also returns
+  // the token for in-memory cross-origin fallback.
   return request<VerifyResponse>('/auth/verify', {
     method: 'POST',
     body: JSON.stringify({ challengeId, address, signature }),

@@ -9,6 +9,9 @@ build/
 .next/
 .nx/
 
+# Local testnet journey state (contains live secrets — never commit)
+.testnet-journey/
+
 # Environment
 .env
 .env.local
@@ -32,6 +35,9 @@ coverage/
 *.db
 *.sqlite
 prisma/migrations/*/migration_lock.toml
+
+# Vercel (local deploy-check state from scripts/vercel-deploy-check.sh)
+.vercel/
 
 # Docker
 docker-compose.override.yml

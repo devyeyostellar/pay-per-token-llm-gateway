@@ -140,3 +140,20 @@ export function isValidStellarAddress(address: string): boolean {
 export function isValidTxHash(hash: string): boolean {
   return /^[a-f0-9]{64}$/i.test(hash);
 }
+
+// ── Redis Interface ──────────────────────────
+
+/**
+ * Minimal interface for Redis operations used across the gateway.
+ * ioredis satisfies this interface natively.
+ *
+ * Shared by {@link ReplayProtection} (x402-core) and {@link AuthStore}
+ * (authentication) so the Redis + in-memory fallback pattern is
+ * defined once.
+ */
+export interface RedisLike {
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string, ...args: string[]): Promise<string | null>;
+  del(...keys: string[]): Promise<number>;
+  exists(key: string): Promise<number>;
+}

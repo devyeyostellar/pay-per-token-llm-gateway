@@ -48,6 +48,8 @@ export interface Quote {
   paymentAddress: StellarAddress;
   /** Memo required for the payment (if any) */
   memo?: string;
+  /** Unix timestamp when this quote was issued */
+  issuedAt: number;
   /** Unix timestamp when this quote expires */
   expiresAt: number;
   /** Chain ID / network passphrase */
@@ -285,11 +287,24 @@ export interface X402ClientConfig {
   network: StellarNetwork;
   /** Default asset for payment */
   defaultAsset?: PaymentAsset;
-  /** Secret key for signing transactions (client-side only) */
+  /**
+   * Secret key for signing transactions (client-side only).
+   * When set, payments are built and signed directly. For external wallet
+   * signing, use `publicKey` + `signTransaction` instead.
+   */
   secretKey?: string;
+  /**
+   * Public Stellar address of the source account. Required when using an
+   * external signer (`signTransaction`) instead of a `secretKey`.
+   */
+  publicKey?: string;
   /** Maximum time to wait for payment confirmation (ms) */
   paymentTimeout?: number;
-  /** Function to sign a Stellar transaction */
+  /**
+   * External transaction signer. Receives an unsigned transaction XDR,
+   * returns the signed XDR. Use together with `publicKey` when the SDK
+   * cannot hold a secret key (e.g. browser wallet extensions, agent SDKs).
+   */
   signTransaction?: (txXdr: string) => Promise<string>;
 }
 

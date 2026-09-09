@@ -59,12 +59,14 @@ export default function LoginPage() {
       // Step 3: Sign the challenge with the wallet
       const signature = await signChallenge(walletInfo.type, address, challenge);
 
-      // Step 4: Verify with the gateway
+      // Step 4: Verify with the gateway.
+      // The gateway sets an httpOnly cookie (primary auth) and also returns
+      // the token for in-memory cross-origin fallback (Vercel → localhost).
       setStep('verifying');
       const { token } = await verifyChallenge(challengeId, address, signature);
 
-      // Step 5: Store session and navigate
-      setSessionToken(token);
+      // Step 5: Store in-memory token (cross-origin fallback) + wallet address
+      if (token) setSessionToken(token);
       setWalletAddress(address);
 
       router.push('/');
@@ -193,10 +195,14 @@ async function getWalletAddress(type: WalletType): Promise<string | null> {
       return pubKey;
     }
 
-    // Development fallback: use a test wallet address.
-    // This is ONLY allowed when explicitly in development mode — in production,
-    // a missing wallet extension means the user cannot authenticate.
-    if (process.env.NODE_ENV === 'development') {
+    // Dev fallback: use a throwaway testnet address when no wallet extension
+    // is detected. Enabled in local dev (NODE_ENV=development) OR when
+    // NEXT_PUBLIC_AUTH_DEV_MODE=true (Vercel test deployments). The gateway
+    // also requires AUTH_DEV_MODE=true to accept dev signatures.
+    if (
+      process.env.NODE_ENV === 'development' ||
+      process.env.NEXT_PUBLIC_AUTH_DEV_MODE === 'true'
+    ) {
       console.warn(`[x402] No ${type} wallet extension detected. Using dev mode address.`);
       return 'GA5ZSE6VKPVFLEXMWJQBGHE4FJHKQIFSJMLQ7H4VFQB4UHLEH5IOVK3F';
     }
@@ -229,10 +235,12 @@ async function signChallenge(
       return result.signature;
     }
 
-    // Development fallback: return a mock signature.
-    // This is ONLY allowed in development mode — in production,
-    // a missing wallet means the user cannot sign.
-    if (process.env.NODE_ENV === 'development') {
+    // Dev fallback: return a mock signature when no wallet extension is
+    // detected. Enabled in local dev OR when NEXT_PUBLIC_AUTH_DEV_MODE=true.
+    if (
+      process.env.NODE_ENV === 'development' ||
+      process.env.NEXT_PUBLIC_AUTH_DEV_MODE === 'true'
+    ) {
       console.warn(`[x402] No ${type} wallet for signing. Using dev mode signature.`);
       return Buffer.from(`dev-sig-${address}-${Date.now()}`, 'utf-8').toString('base64');
     }

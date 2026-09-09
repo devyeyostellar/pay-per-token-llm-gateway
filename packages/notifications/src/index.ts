@@ -1,5 +1,5 @@
 // ──────────────────────────────────────────────
-// @x402/notifications — Email, webhook, in-app
+// @x402/notifications — Webhook, in-app
 // ──────────────────────────────────────────────
 
 import type { NotificationChannel, NotificationEvent } from '@x402/types';
@@ -67,41 +67,46 @@ export function markInAppRead(messageId: string): boolean {
   return false;
 }
 
-// ── Email Notification Handler ───────────────
+// ── Webhook Notification Handler ─────────────
 
-export class EmailNotificationHandler implements NotificationHandler {
-  channel: NotificationChannel = 'email';
-
-  constructor(
-    private options: {
-      smtpHost?: string;
-      smtpPort?: number;
-      fromAddress?: string;
-    } = {},
-  ) {}
-
-  async send(payload: NotificationPayload): Promise<boolean> {
-    if (!this.options.smtpHost) {
-      logger.warn(
-        'Email notifications not configured — skipping',
-        payload as unknown as Record<string, unknown>,
-      );
-      return false;
-    }
-
-    // In production, this would use nodemailer or similar.
-    // Placeholder implementation.
-    logger.info('Email notification (placeholder)', {
-      to: `provider:${payload.providerId}`,
-      subject: `x402 Gateway: ${payload.event}`,
-      ...(payload as unknown as Record<string, unknown>),
-    });
-
-    return true;
+/**
+ * Stable, content-derived event id (djb2 hash over the serialized payload,
+ * hex-encoded). Retries of the same notification — same event, provider,
+ * and data — produce the SAME id, so receivers can dedupe idempotently.
+ */
+function deriveEventId(payload: NotificationPayload): string {
+  const input = JSON.stringify({
+    event: payload.event,
+    providerId: payload.providerId,
+    data: payload.data,
+  });
+  let hash = 5381;
+  for (let i = 0; i < input.length; i++) {
+    hash = ((hash << 5) + hash + input.charCodeAt(i)) | 0;
   }
+  return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
-// ── Webhook Notification Handler ─────────────
+/**
+ * Build the webhook envelope ONCE per notification: a stable eventId and a
+ * fixed body. Retries must deliver the identical payload — a retry with a
+ * different timestamp would otherwise break receiver-side idempotency and
+ * (for the signed path) invalidate the signature.
+ */
+function buildEnvelope(payload: NotificationPayload): {
+  body: string;
+  eventId: string;
+} {
+  const eventId = deriveEventId(payload);
+  const body = JSON.stringify({
+    eventId,
+    event: payload.event,
+    providerId: payload.providerId,
+    data: payload.data,
+    timestamp: new Date().toISOString(),
+  });
+  return { body, eventId };
+}
 
 export class WebhookNotificationHandler implements NotificationHandler {
   channel: NotificationChannel = 'webhook';
@@ -115,27 +120,24 @@ export class WebhookNotificationHandler implements NotificationHandler {
 
   async send(payload: NotificationPayload, webhookUrl?: string): Promise<boolean> {
     if (!webhookUrl) {
-      logger.warn(
-        'No webhook URL configured — skipping',
-        payload as unknown as Record<string, unknown>,
-      );
+      logger.warn('No webhook URL configured — skipping');
       return false;
     }
 
     const maxRetries = this.options.retryCount || 3;
     const retryDelay = this.options.retryDelayMs || 1000;
+    const { body, eventId } = buildEnvelope(payload);
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'X-x402-Event-Id': eventId,
+    };
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         const response = await fetch(webhookUrl, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            event: payload.event,
-            providerId: payload.providerId,
-            data: payload.data,
-            timestamp: new Date().toISOString(),
-          }),
+          headers,
+          body, // identical body on every retry
         });
 
         if (response.ok) {
@@ -166,6 +168,8 @@ export class WebhookNotificationHandler implements NotificationHandler {
    * receiver can verify the payload came from this gateway.
    *
    * Signature: hex(HMAC-SHA256(secret, rawBody)) sent as `X-x402-Signature`.
+   * Event id: stable per notification (same body on every retry) sent as
+   * `X-x402-Event-Id` for receiver-side dedup.
    */
   async sendWithSignature(
     payload: NotificationPayload,
@@ -174,14 +178,12 @@ export class WebhookNotificationHandler implements NotificationHandler {
   ): Promise<boolean> {
     const maxRetries = this.options.retryCount || 3;
     const retryDelay = this.options.retryDelayMs || 1000;
-    const body = JSON.stringify({
-      event: payload.event,
-      providerId: payload.providerId,
-      data: payload.data,
-      timestamp: new Date().toISOString(),
-    });
+    const { body, eventId } = buildEnvelope(payload);
 
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'X-x402-Event-Id': eventId,
+    };
     if (secret) {
       const { createHmac } = await import('crypto');
       headers['X-x402-Signature'] = createHmac('sha256', secret).update(body).digest('hex');
@@ -257,6 +259,6 @@ export class NotificationDispatcher {
   }
 }
 
-/** Default dispatcher instance */
+/** Default dispatcher instance — handlers are registered at gateway startup. */
 export const dispatcher = new NotificationDispatcher();
 dispatcher.register(inAppHandler);

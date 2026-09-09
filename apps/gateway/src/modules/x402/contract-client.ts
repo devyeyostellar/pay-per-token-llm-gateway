@@ -8,8 +8,9 @@
  * verification flow.
  */
 
-import { Address, xdr, Keypair } from '@stellar/stellar-sdk';
+import { xdr, Keypair } from '@stellar/stellar-sdk';
 import { logger } from '@x402/logger';
+import { accountAddressToScVal, amountToScVal } from './soroban-utils';
 
 /** JSON-RPC 2.0 response wrapper */
 interface RpcResponse<T = unknown> {
@@ -43,11 +44,14 @@ async function sorobanRpcCall<T = unknown>(
   rpcUrl: string,
   method: string,
   params: Record<string, unknown>,
+  timeoutMs = 10_000,
 ): Promise<T> {
   const res = await fetch(rpcUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+    // A hung Soroban RPC must never hold a request handler open.
+    signal: AbortSignal.timeout(timeoutMs),
   });
 
   if (!res.ok) {
@@ -71,6 +75,7 @@ export async function isPaymentUsedOnChain(
   contractId: string,
   txHash: string,
   rpcUrl: string,
+  timeoutMs = 10_000,
 ): Promise<boolean> {
   try {
     const key: ContractDataKey = {
@@ -86,9 +91,12 @@ export async function isPaymentUsedOnChain(
       durability: 'persistent',
     };
 
-    const result = await sorobanRpcCall<GetLedgerEntriesResult>(rpcUrl, 'getLedgerEntries', {
-      keys: [key],
-    });
+    const result = await sorobanRpcCall<GetLedgerEntriesResult>(
+      rpcUrl,
+      'getLedgerEntries',
+      { keys: [key] },
+      timeoutMs,
+    );
 
     return !!(result?.entries && result.entries.length > 0);
   } catch (err) {
@@ -107,6 +115,8 @@ export interface RecordPaymentOptions {
   contractId: string;
   rpcUrl: string;
   networkPassphrase: string;
+  /** RPC timeout in seconds (passed to the stellar-sdk contract client). */
+  timeoutSeconds?: number;
   /** Secret key of the contract admin (signs the invocation). */
   adminSecret: string;
   txHash: string;
@@ -122,24 +132,6 @@ export interface RecordPaymentResult {
   recorded: boolean;
   txHash?: string;
   error?: string;
-}
-
-/**
- * Convert a Stellar account (G...) or contract (C...) address to an
- * `Address` ScVal. `Address.fromString` accepts both forms in stellar-sdk
- * v12 (the raw-ed25519 workaround was only needed for older SDK versions).
- */
-function accountAddressToScVal(address: string): xdr.ScVal {
-  return Address.fromString(address).toScVal();
-}
-
-/** Convert a non-negative stroop amount (i128) to a signed 128-bit ScVal. */
-function amountToScVal(amount: string): xdr.ScVal {
-  const value = BigInt(amount);
-  if (value < 0n) throw new Error('Amount must be non-negative');
-  const lo = xdr.Uint64.fromString(value.toString());
-  const hi = xdr.Int64.fromString('0');
-  return xdr.ScVal.scvI128(new xdr.Int128Parts({ lo, hi }));
 }
 
 /**
@@ -169,7 +161,12 @@ export async function recordPaymentOnChain(
     // generated at runtime from the contract spec, so they don't exist on the
     // static `Client` type — treat the instance as `any` (same as `tx` below).
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const client: any = await Client.from({ contractId, rpcUrl, networkPassphrase });
+    const client: any = await Client.from({
+      contractId,
+      rpcUrl,
+      networkPassphrase,
+      ...(options.timeoutSeconds ? { timeout: options.timeoutSeconds } : {}),
+    });
 
     // Invoke `record_payment` with explicit ScVals for exact type fidelity
     // (Address/i128/u64 are not representable as plain JS values).

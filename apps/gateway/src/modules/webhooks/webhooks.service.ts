@@ -84,6 +84,51 @@ export function signWebhookPayload(secret: string, payload: string): string {
   return createHmac('sha256', secret).update(payload).digest('hex');
 }
 
+/**
+ * SSRF guard for upstream LLM URLs configured in routes.
+ *
+ * Unlike webhooks (HTTPS-only), upstream URLs may use HTTP (many LLM APIs
+ * and internal proxies run over plain HTTP). The guard still enforces that
+ * the resolved hostname points to a public IP address — internal/private
+ * infrastructure must never be reachable through the proxy.
+ *
+ * DNS resolution is performed at configuration time. Runtime re-validation
+ * (at proxy time) would add per-request latency; the trust model assumes
+ * only authenticated provider wallets can configure routes.
+ */
+export async function validateUpstreamUrl(url: string): Promise<string> {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error('Invalid upstream URL');
+  }
+
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new Error('Upstream URL must use HTTP or HTTPS');
+  }
+
+  // Resolve the hostname and reject private / loopback / link-local / CGNAT
+  // ranges and the cloud metadata IP.
+  let addresses: string[];
+  try {
+    addresses = (await lookup(parsed.hostname, { all: true })).map((a) => a.address);
+  } catch {
+    throw new Error('Upstream hostname could not be resolved');
+  }
+  if (addresses.length === 0) {
+    throw new Error('Upstream hostname could not be resolved');
+  }
+
+  for (const addr of addresses) {
+    if (!isPublicIp(addr)) {
+      throw new Error('Upstream URL must point to a public IP address');
+    }
+  }
+
+  return url;
+}
+
 @Injectable()
 export class WebhooksService {
   /**

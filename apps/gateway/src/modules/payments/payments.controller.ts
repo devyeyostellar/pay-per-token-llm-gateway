@@ -3,10 +3,12 @@ import { ApiTags, ApiOperation, ApiQuery } from '@nestjs/swagger';
 import { PaymentsService } from './payments.service';
 import { AuthGuard } from '../auth/auth.guard';
 import { CurrentWallet } from '../auth/current-wallet.decorator';
+import { RateLimitGuard } from '../../common/guards/rate-limit.guard';
 import { paginationSchema } from '@x402/validation';
 
 @ApiTags('payments')
 @Controller('payments')
+@UseGuards(RateLimitGuard)
 export class PaymentsController {
   constructor(private readonly paymentsService: PaymentsService) {}
 

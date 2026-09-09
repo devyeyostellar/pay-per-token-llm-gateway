@@ -1,0 +1,101 @@
+{
+  "runAt": "2026-09-09T15:24:22.551Z",
+  "network": "testnet",
+  "gatewayUrl": "http://127.0.0.1:3100",
+  "horizonUrl": "https://horizon-testnet.stellar.org",
+  "usdcIssuer": "GBS36HWFB6QFYH6XF3DAPZQNSRMGTQWABYFKZ2C7IVCTVUZUTQGV7WQB",
+  "steps": {
+    "fund": {
+      "issuer": "GBS36HWFB6QFYH6XF3DAPZQNSRMGTQWABYFKZ2C7IVCTVUZUTQGV7WQB",
+      "payer": "GBEL3LA2BYJFNU73BXWBXNGZDPEB47UWGGAUPFA2Z5ZJEQJZBAIII2DB",
+      "receiver": "GBU3Z6E4OCK6OZI6ZF572W5IITXS2F6Y4CCZKR5O7B2ZGBXUAC7MAEPJ"
+    },
+    "trustline": {
+      "payerTxHash": "78fd2c2301e4c852eb7b2d805c5176d0da2e2035503e774bbbc4ca5130ee4a98",
+      "receiverTxHash": "1a721f580799f776f9577a58e6339cacb5525c05cc25011e19c9da9836947e26",
+      "asset": "USDC:GBS36HWFB6QFYH6XF3DAPZQNSRMGTQWABYFKZ2C7IVCTVUZUTQGV7WQB"
+    },
+    "mint": {
+      "txHash": "b4feeef91f392c0e3ae3cd8d6d9ab943651b5d5006763c23f40abc6eb6c8e7d3",
+      "amount": "100 USDC"
+    },
+    "seed": {
+      "providerId": "journey-provider",
+      "routeId": "56d939ed-41cb-4afc-a0d6-83734669611e"
+    },
+    "quote": {
+      "quote": {
+        "id": "e0138fa2-76db-4a42-82f2-89b39d225011",
+        "route": "/v1/chat/completions",
+        "pricingModel": "flat",
+        "amount": "1000000",
+        "asset": "USDC",
+        "assetIssuer": "GBS36HWFB6QFYH6XF3DAPZQNSRMGTQWABYFKZ2C7IVCTVUZUTQGV7WQB",
+        "paymentAddress": "GBU3Z6E4OCK6OZI6ZF572W5IITXS2F6Y4CCZKR5O7B2ZGBXUAC7MAEPJ",
+        "memo": "e0138fa276db4a4282f289b3",
+        "network": "testnet",
+        "issuedAt": 1788967487,
+        "expiresAt": 1788967787,
+        "statusUrl": "http://127.0.0.1:3100/api/v1/payments/e0138fa2-76db-4a42-82f2-89b39d225011/status"
+      }
+    },
+    "pay": {
+      "txHash": "d5084d3d5bb648df7e3b73a2383187e12727e879e12976592900cebb93d2d810",
+      "ledger": 4588781,
+      "amount": "0.1 USDC",
+      "to": "GBU3Z6E4OCK6OZI6ZF572W5IITXS2F6Y4CCZKR5O7B2ZGBXUAC7MAEPJ",
+      "memo": "e0138fa276db4a4282f289b3",
+      "horizon": "https://horizon-testnet.stellar.org/transactions/d5084d3d5bb648df7e3b73a2383187e12727e879e12976592900cebb93d2d810"
+    },
+    "forward": {
+      "status": 200,
+      "receipt": {
+        "id": "0356f092-10ed-48f5-b3a2-2f5ae0582aca",
+        "quoteId": "2522e1e8-fd00-46ae-be5f-dcfe5e7b94be",
+        "txHash": "d5084d3d5bb648df7e3b73a2383187e12727e879e12976592900cebb93d2d810",
+        "payerAddress": "GBEL3LA2BYJFNU73BXWBXNGZDPEB47UWGGAUPFA2Z5ZJEQJZBAIII2DB",
+        "amount": "1000000",
+        "asset": "USDC",
+        "status": "confirmed",
+        "actualCost": "1000000",
+        "tokensUsed": null
+      }
+    },
+    "replay-rejected": {
+      "status": 402,
+      "message": "This payment has already been used. A new payment is required."
+    },
+    "forged-rejected": {
+      "status": 402,
+      "message": "Payment verification failed: Transaction not found on chain"
+    },
+    "balances": {
+      "payer": [
+        {
+          "asset": "USDC:GBS36HWF",
+          "balance": "99.9000000"
+        },
+        {
+          "asset": "XLM",
+          "balance": "9999.9999800"
+        }
+      ],
+      "receiver": [
+        {
+          "asset": "USDC:GBS36HWF",
+          "balance": "0.1000000"
+        },
+        {
+          "asset": "XLM",
+          "balance": "9999.9999900"
+        }
+      ],
+      "issuer": [
+        {
+          "asset": "XLM",
+          "balance": "19999.9998900"
+        }
+      ]
+    }
+  }
+}

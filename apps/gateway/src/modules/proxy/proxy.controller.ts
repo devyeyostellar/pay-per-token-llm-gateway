@@ -17,13 +17,16 @@ import { PaymentsService } from '../payments/payments.service';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { AdminService } from '../admin/admin.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
+import { MetricsService } from '../../common/metrics.service';
 import { RateLimitGuard } from '../../common/guards/rate-limit.guard';
+import { childSpan, type TraceRequest } from '../../common/trace-context.middleware';
+import { serializeTraceparent } from '@x402/logger';
 import { chatCompletionRequestSchema, txHashSchema } from '@x402/validation';
-import { calculatePrice, comparePayment } from '@x402/x402-core';
+import { calculatePrice, comparePayment, DEFAULT_TOKEN_ESTIMATE } from '@x402/x402-core';
+import { getConfig } from '@x402/config';
 import { logger } from '@x402/logger';
 import { generateId } from '@x402/shared';
-import { chargeEscrowOnChain } from '../x402/contract-client';
-import { getConfig } from '@x402/config';
+import { settleEscrow } from '../x402/escrow-client';
 import type { ChatCompletionRequest, PaymentRecord, Quote, RouteConfig } from '@x402/types';
 
 @ApiTags('proxy')
@@ -38,6 +41,7 @@ export class ProxyController {
     private readonly analyticsService: AnalyticsService,
     private readonly adminService: AdminService,
     private readonly webhooksService: WebhooksService,
+    private readonly metrics: MetricsService,
   ) {}
 
   /**
@@ -54,7 +58,10 @@ export class ProxyController {
   @All('chat/completions')
   @HttpCode(HttpStatus.OK)
   async handleChatCompletion(@Req() req: Request, @Res() res: Response) {
-    const traceId = generateId();
+    // The trace context (W3C `traceparent`) was established by the
+    // trace-context middleware; controllers derive child spans from it.
+    const traceContext = (req as TraceRequest).traceContext;
+    const traceId = traceContext?.traceId ?? generateId();
     const startTime = Date.now();
 
     try {
@@ -98,11 +105,21 @@ export class ProxyController {
         }
       }
       if (!txHash) {
-        return this.handle402Response(res, route, traceId, model, body);
+        const quoteSpan = childSpan('quote.generate', req as TraceRequest, {
+          model,
+          pricingModel: route.pricingModel,
+        });
+        await this.handle402Response(res, route, traceId, model, body);
+        quoteSpan.end({ model, route: route.path });
+        return;
       }
 
-      // 4. Verify payment (includes cross-route replay protection)
+      // 4. Verify payment (includes cross-route replay protection). The
+      //    span wraps the whole verify → claim → debt-gate path so its
+      //    duration reflects the full on-chain verification.
+      const verifySpan = childSpan('payment.verify', req as TraceRequest, { txHash });
       const verified = await this.verifyAndConfirmPayment(txHash, route, res, traceId);
+      verifySpan.end({ txHash, verified });
       if (!verified) {
         return; // 402 error response already sent
       }
@@ -112,29 +129,47 @@ export class ProxyController {
         process.env[`UPSTREAM_API_KEY_${route.providerId.toUpperCase().replace(/-/g, '_')}`];
       const payment = await this.paymentsService.findByTxHash(txHash);
 
+      // 6. Bound per-token completions to what the deposit covers (see
+      //    capForwardBody): never forward an uncapped request whose deposit
+      //    was estimated from the default token budget.
+      const forwardBody = this.capForwardBody(body, route, payment);
+
+      // Span over the upstream forward + metered settlement. The W3C context
+      // is propagated to the upstream as `traceparent` alongside the legacy
+      // X-Request-Trace-Id header.
+      const forwardSpan = childSpan('upstream.forward', req as TraceRequest, {
+        model: body.model,
+        stream: !!body.stream,
+      });
+      const upstreamTraceparent = traceContext ? serializeTraceparent(traceContext) : undefined;
+
       if (body.stream) {
-        return this.handleStreamingForward(
+        await this.handleStreamingForward(
           res,
-          body,
+          forwardBody,
           route,
           txHash,
           upstreamApiKey,
           payment,
           traceId,
           startTime,
+          upstreamTraceparent,
+        );
+      } else {
+        await this.handleNonStreamingForward(
+          res,
+          forwardBody,
+          route,
+          txHash,
+          upstreamApiKey,
+          payment,
+          traceId,
+          startTime,
+          upstreamTraceparent,
         );
       }
-
-      return this.handleNonStreamingForward(
-        res,
-        body,
-        route,
-        txHash,
-        upstreamApiKey,
-        payment,
-        traceId,
-        startTime,
-      );
+      forwardSpan.end({ model: body.model, stream: !!body.stream });
+      return;
     } catch (error) {
       logger.error('Proxy error', { traceId, error: String(error) });
 
@@ -155,6 +190,40 @@ export class ProxyController {
   }
 
   // ── Helper methods ───────────────────────────
+
+  /**
+   * Cap the forwarded completion length for per-token routes.
+   *
+   * Per-token deposits are estimated from `max_tokens` (or a default budget
+   * when the client omits it). If the client omitted `max_tokens`, an
+   * uncapped upstream response could generate far more completion tokens than
+   * the deposit covers — so forward with `max_tokens` set to exactly the
+   * budget the deposit was estimated from. Clients that supplied their own
+   * `max_tokens` are already bounded server-side and pass through untouched.
+   *
+   * Note: this bounds completion tokens; prompt tokens are still unbounded
+   * and still billed, which the underpayment debt gate (verifyAndConfirm
+   * Payment) exists to enforce.
+   */
+  private capForwardBody(
+    body: ChatCompletionRequest,
+    route: RouteConfig,
+    payment: PaymentRecord | null,
+  ): ChatCompletionRequest {
+    if (route.pricingModel !== 'per_token' || body.max_tokens !== undefined) return body;
+
+    // The quote used for this payment carries the exact estimate the deposit
+    // was based on (falls back to the shared default for payment rows whose
+    // receipt was written before the field existed).
+    const quote = payment?.receiptJson ? (payment.receiptJson as Quote) : null;
+    const budget = quote?.estimatedMaxTokens ?? DEFAULT_TOKEN_ESTIMATE;
+    logger.info('Capping forwarded max_tokens to deposit estimate', {
+      model: body.model,
+      max_tokens: budget,
+      pricingModel: route.pricingModel,
+    });
+    return { ...body, max_tokens: budget };
+  }
 
   /**
    * Send a 402 Payment Required response.
@@ -316,6 +385,76 @@ export class ProxyController {
       return false;
     }
 
+    // ── Underpayment debt gate (per-token enforcement) ────────────
+    //
+    // A payer with open underpayment debt on this provider must top up before
+    // receiving further LLM access. The arriving on-chain payment must cover
+    // the current quote deposit PLUS all outstanding debt; the surplus over
+    // the deposit is the debt repayment and clears the ledger. When the
+    // payment is insufficient we answer 402 with a quote for the combined
+    // amount so the SDK auto-pays the top-up in a single transaction.
+    //
+    // Quotes always carry the pure deposit (never the debt), so the same
+    // deposit basis is used here and in the metered settlement below. The
+    // refused payment is deliberately not claimed — it stays on-chain to the
+    // provider (the protocol has no refund path) and its hash is already
+    // consumed by Redis/on-chain replay protection, so it cannot be replayed.
+    const openDebt = await this.paymentsService.getOpenDebtTotal(
+      verification.payerAddress,
+      route.providerId,
+    );
+    if (openDebt > 0n) {
+      const deposit = BigInt(quoteForVerification.amount);
+      const requiredTotal = deposit + openDebt;
+      if (BigInt(verification.amount) < requiredTotal) {
+        logger.warn('Underpayment debt outstanding — access denied until topped up', {
+          traceId,
+          txHash,
+          payerAddress: verification.payerAddress,
+          providerId: route.providerId,
+          debt: openDebt.toString(),
+          paid: verification.amount,
+          requiredTotal: requiredTotal.toString(),
+        });
+
+        await this.adminService.writeAuditLog({
+          action: 'payment_debt_denied',
+          entity: 'payment',
+          entityId: txHash,
+          providerId: route.providerId,
+          actor: verification.payerAddress,
+          details: {
+            debt: openDebt.toString(),
+            paid: verification.amount,
+            requiredTotal: requiredTotal.toString(),
+            route: route.path,
+            traceId,
+          },
+        });
+
+        // Fresh deposit quote, amount bumped to deposit + debt so the client
+        // SDK pays the top-up in one transaction.
+        const baseQuote = await this.x402Service.generateQuoteForRoute(route);
+        const topUpQuote: Quote = { ...baseQuote, amount: requiredTotal.toString() };
+        const debtRequiredResponse = await this.x402Service.build402Response(topUpQuote);
+        res.status(402).json(debtRequiredResponse);
+        return false;
+      }
+
+      // Payment covers deposit + debt → the surplus is the repayment.
+      await this.paymentsService.settleUnderpaymentDebts(
+        verification.payerAddress,
+        route.providerId,
+      );
+      logger.info('Underpayment debt settled by top-up payment', {
+        traceId,
+        txHash,
+        payerAddress: verification.payerAddress,
+        providerId: route.providerId,
+        debt: openDebt.toString(),
+      });
+    }
+
     // Atomically claim the payment. `confirmPayment` returns null when a
     // concurrent request already consumed this hash (single-use invariant)
     // — in that case the caller must NOT receive LLM access.
@@ -371,6 +510,9 @@ export class ProxyController {
   /**
    * Forward a streaming request: pipe SSE chunks from upstream to client.
    * For per-token routes, calculates actual cost from final SSE usage chunk.
+   *
+   * After the stream completes, sends cost/receipt data as a trailing SSE
+   * event so the SDK can extract payment info from streaming responses.
    */
   private async handleStreamingForward(
     res: Response,
@@ -381,6 +523,7 @@ export class ProxyController {
     payment: PaymentRecord | null,
     traceId: string,
     startTime: number,
+    traceparent?: string,
   ) {
     logger.info('Forwarding streaming request to upstream', {
       traceId,
@@ -415,6 +558,7 @@ export class ProxyController {
       res,
       apiKey,
       traceId,
+      traceparent,
       async (totalTokens) => {
         const streamDuration = Date.now() - startTime;
 
@@ -426,6 +570,28 @@ export class ProxyController {
           res,
           traceId,
         );
+
+        // Send cost/receipt as a trailing SSE event so the SDK can extract
+        // payment info from streaming responses (headers are already flushed).
+        if (payment) {
+          const receipt = {
+            id: payment.id,
+            quoteId: payment.quoteId,
+            txHash: payment.txHash,
+            payerAddress: payment.payerAddress,
+            amount: payment.amount?.toString(),
+            asset: payment.asset,
+            status: payment.status,
+            actualCost: costResult.actualCost,
+            tokensUsed: totalTokens ?? null,
+          };
+          try {
+            res.write(`data: ${JSON.stringify({ x402_receipt: receipt })}\n\n`);
+            res.write('data: [DONE]\n\n');
+          } catch {
+            /* client disconnected — stream already ended */
+          }
+        }
 
         await this.analyticsService.recordPaidRequest(
           route.path,
@@ -461,6 +627,7 @@ export class ProxyController {
     payment: PaymentRecord | null,
     traceId: string,
     _startTime: number,
+    traceparent?: string,
   ) {
     logger.info('Forwarding request to upstream', {
       traceId,
@@ -474,6 +641,7 @@ export class ProxyController {
       route.upstreamUrl,
       apiKey,
       traceId,
+      traceparent,
     );
 
     // Calculate actual cost for per-token pricing
@@ -626,6 +794,56 @@ export class ProxyController {
         paidAmount,
         shortfall: comparison.surplus,
       });
+
+      // Record the deficit as open debt so future access from this payer on
+      // this provider is gated until topped up (see the debt gate in
+      // verifyAndConfirmPayment). The response is already delivered — this
+      // ledger is what makes the underpayment recoverable on the next visit.
+      if (payment?.payerAddress) {
+        await this.paymentsService.recordUnderpaymentDebt({
+          quoteId: payment.quoteId,
+          providerId: route.providerId,
+          routeId: route.id,
+          payerAddress: payment.payerAddress,
+          amount: comparison.surplus.replace('-', ''), // deficit = −surplus
+        });
+        this.metrics.safe(() => this.metrics.underpaymentDebtsRecorded.inc());
+      }
+    }
+
+    // Escrow settlement: charge actual cost + refund surplus from the
+    // caller's credit-escrow balance. Best-effort (fire-and-forget) — the
+    // LLM response has already been delivered; on-chain settlement must
+    // never block it.
+    if (payment?.payerAddress) {
+      const config = getConfig();
+
+      // Operational signal (not an error): a per-token route is being served
+      // without on-chain settlement — actual usage is metered and debited
+      // locally, but never charged to the caller's escrow balance.
+      if (!config.payment.escrowSettlementEnabled) {
+        logger.warn('Per-token route used without escrow settlement enabled', {
+          traceId,
+          routeId: route.id,
+          providerId: route.providerId,
+          actualCost,
+          paidAmount: payment?.amount?.toString(),
+          hint: 'Set ESCROW_SETTLEMENT_ENABLED=true + CONTRACT_ADMIN_SECRET to charge actual usage on-chain',
+        });
+      }
+
+      settleEscrow({
+        enabled: config.payment.escrowSettlementEnabled,
+        contractId: config.contracts.creditEscrow,
+        rpcUrl: config.stellar.sorobanRpcUrl,
+        networkPassphrase: config.stellar.networkPassphrase,
+        adminSecret: config.payment.contractAdminSecret,
+        user: payment.payerAddress,
+        actualCost,
+        surplus: comparison.surplus,
+        isOverpaid: comparison.isOverpaid,
+        quoteId: payment.quoteId,
+      }).catch((err) => logger.error('Escrow settlement error', { traceId, error: String(err) }));
     }
 
     return {

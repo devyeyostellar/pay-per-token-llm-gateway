@@ -4,7 +4,7 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 # Install pnpm
-RUN corepack enable && corepack prepare pnpm@9 --activate
+RUN corepack enable && corepack prepare pnpm@11 --activate
 
 # Copy root workspace files (pnpm-lock.yaml is required for --frozen-lockfile)
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml nx.json tsconfig.base.json ./
@@ -26,6 +26,8 @@ COPY apps/gateway/package.json apps/gateway/
 # Copy source code
 COPY packages/ packages/
 COPY apps/gateway/ apps/gateway/
+# Copy the esbuild bundling script (required by the `nx build gateway` target)
+COPY scripts/ scripts/
 
 # Install dependencies
 RUN pnpm install --frozen-lockfile
@@ -38,6 +40,13 @@ RUN pnpm exec nx build gateway
 
 # ── Production Stage ──
 FROM node:20-alpine
+
+# Provenance labels for supply-chain traceability (also used by container
+# scanners to identify the image).
+LABEL org.opencontainers.image.title="x402 LLM Gateway" \
+      org.opencontainers.image.description="Pay-per-request LLM gateway using x402 stablecoin micropayments on Stellar" \
+      org.opencontainers.image.source="https://github.com/mallonepay/pay-per-token-llm-gateway" \
+      org.opencontainers.image.licenses="MIT"
 
 WORKDIR /app
 
@@ -57,6 +66,17 @@ COPY --from=builder /app/node_modules /app/node_modules
 # packages/database/node_modules symlinks into the pnpm store)
 COPY --from=builder /app/packages /app/packages
 
+# Run as an unprivileged user — a compromise of the gateway must not yield
+# root on the host. The `node` user ships with the official image.
+USER node
+
 EXPOSE 3000
+
+# Liveness probe for orchestrators: the /health endpoint is excluded from
+# the api/v1 prefix and answers without dependencies, so this is safe even
+# while Postgres/Redis are still warming up (readiness is checked separately
+# by the orchestrator against /health/ready).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD wget -q -O /dev/null http://127.0.0.1:3000/health || exit 1
 
 CMD ["node", "dist/apps/gateway/main.js"]

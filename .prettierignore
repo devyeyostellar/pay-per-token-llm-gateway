@@ -1,0 +1,13 @@
+# Rust / Soroban contracts (use `cargo fmt` instead)
+*.rs
+
+# Generated / build output
+dist/
+.next/
+.nx/
+coverage/
+node_modules/
+target/
+
+# Prisma
+prisma/migrations/

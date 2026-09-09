@@ -19,6 +19,7 @@ export default function PaymentsPage() {
   };
 
   if (isError) {
+    const isUnauthenticated = (error as Error).message?.includes('401');
     return (
       <div className="space-y-6">
         <div>
@@ -28,7 +29,22 @@ export default function PaymentsPage() {
           </p>
         </div>
         <div className="card">
-          <p className="text-red-400">Failed to load: {(error as Error).message}</p>
+          {isUnauthenticated ? (
+            <>
+              <p className="text-yellow-400">Authentication required</p>
+              <p className="text-muted-foreground text-sm mt-2">
+                Your session has expired or you are not logged in.
+              </p>
+              <a
+                href="/login"
+                className="inline-flex items-center gap-2 mt-3 text-sm bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg transition-colors"
+              >
+                Connect Wallet
+              </a>
+            </>
+          ) : (
+            <p className="text-red-400">Failed to load: {(error as Error).message}</p>
+          )}
         </div>
       </div>
     );

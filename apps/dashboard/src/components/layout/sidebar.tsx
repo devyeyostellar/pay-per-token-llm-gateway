@@ -34,7 +34,9 @@ export function Sidebar() {
             className="w-10 h-10 rounded-xl shadow-lg shadow-green-500/20 transition-transform group-hover:scale-105"
           />
           <div>
-            <h1 className="font-bold text-lg tracking-tight group-hover:text-green-400 transition-colors">x402</h1>
+            <h1 className="font-bold text-lg tracking-tight group-hover:text-green-400 transition-colors">
+              x402
+            </h1>
             <p className="text-xs text-muted-foreground">LLM Gateway</p>
           </div>
         </Link>

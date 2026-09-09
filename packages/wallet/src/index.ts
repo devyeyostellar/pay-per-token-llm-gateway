@@ -80,6 +80,17 @@ export interface BuildPaymentOptions {
   horizonUrl: string;
 }
 
+export interface BuildUnsignedPaymentOptions {
+  sourcePublicKey: StellarAddress;
+  destination: StellarAddress;
+  amount: string;
+  asset: PaymentAsset;
+  assetIssuer?: string;
+  memo?: string;
+  network: StellarNetwork;
+  horizonUrl: string;
+}
+
 /**
  * Build and sign a Stellar payment transaction.
  * Returns the signed transaction XDR and the transaction hash.
@@ -91,8 +102,43 @@ export async function buildPaymentTransaction(
     options;
 
   const sourceKeypair = Keypair.fromSecret(sourceSecret);
+  const unsigned = await buildUnsignedPaymentTransaction({
+    sourcePublicKey: sourceKeypair.publicKey(),
+    destination,
+    amount,
+    asset,
+    assetIssuer,
+    memo,
+    network,
+    horizonUrl,
+  });
+
+  // Re-hydrate the transaction so we can sign it
+  const tx = TransactionBuilder.fromXDR(unsigned.txXdr, getNetworkPassphrase(network));
+  tx.sign(sourceKeypair);
+
+  return {
+    txXdr: tx.toXDR(),
+    txHash: tx.hash().toString('hex'),
+  };
+}
+
+/**
+ * Build an unsigned Stellar payment transaction for external signing.
+ *
+ * Returns the unsigned transaction XDR so the caller can pass it to an
+ * external signer (browser wallet extension, hardware wallet, agent SDK).
+ * After signing, submit the signed XDR via {@link createHorizonServer} and
+ * `server.submitTransaction(signedXdr)`.
+ */
+export async function buildUnsignedPaymentTransaction(
+  options: BuildUnsignedPaymentOptions,
+): Promise<{ txXdr: string; txHash: TxHash }> {
+  const { sourcePublicKey, destination, amount, asset, assetIssuer, memo, network, horizonUrl } =
+    options;
+
   const server = new Horizon.Server(horizonUrl);
-  const sourceAccount = await server.loadAccount(sourceKeypair.publicKey());
+  const sourceAccount = await server.loadAccount(sourcePublicKey);
   const passphrase = getNetworkPassphrase(network);
 
   let stellarAsset: Asset;
@@ -122,7 +168,6 @@ export async function buildPaymentTransaction(
   }
 
   const built = tx.build();
-  built.sign(sourceKeypair);
 
   return {
     txXdr: built.toXDR(),

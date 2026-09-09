@@ -1,9 +1,5 @@
 {
-  "buildCommand": "pnpm install --frozen-lockfile && pnpm exec nx build dashboard",
-  "outputDirectory": "dist/apps/dashboard",
+  "buildCommand": "pnpm exec next build",
   "installCommand": "pnpm install --frozen-lockfile",
-  "framework": "nextjs",
-  "env": {
-    "NEXT_PUBLIC_GATEWAY_URL": "https://x402-gateway.your-team.railway.app"
-  }
+  "framework": "nextjs"
 }

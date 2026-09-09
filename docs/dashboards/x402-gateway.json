@@ -1,0 +1,141 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "title": "HTTP request rate by status",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum by (status) (rate(http_requests_total{service=\"x402-gateway\"}[5m]))",
+          "legendFormat": "{{status}}"
+        }
+      ]
+    },
+    {
+      "title": "Proxy latency p50/p95/p99",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(http_request_duration_ms_bucket{route=\"/api/v1/chat/completions\"}[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_ms_bucket{route=\"/api/v1/chat/completions\"}[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_ms_bucket{route=\"/api/v1/chat/completions\"}[5m])))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "title": "Payments verified vs failed",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum by (asset) (rate(x402_payments_verified_total[5m]))",
+          "legendFormat": "verified {{asset}}"
+        },
+        {
+          "expr": "sum by (reason) (rate(x402_payment_verification_failed_total[5m]))",
+          "legendFormat": "failed: {{reason}}"
+        }
+      ]
+    },
+    {
+      "title": "Quotes generated",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum by (pricing_model) (rate(x402_quotes_generated_total[5m]))",
+          "legendFormat": "{{pricing_model}}"
+        }
+      ]
+    },
+    {
+      "title": "Upstream health (errors, retries, circuit opens)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "expr": "sum by (hostname) (rate(x402_upstream_failures_total[5m]))",
+          "legendFormat": "fail {{hostname}}"
+        },
+        {
+          "expr": "sum by (hostname) (rate(x402_upstream_retries_total[5m]))",
+          "legendFormat": "retry {{hostname}}"
+        },
+        {
+          "expr": "rate(x402_circuit_breaker_opens_total[15m])",
+          "legendFormat": "circuit open"
+        }
+      ]
+    },
+    {
+      "title": "Revenue ops (debts, on-chain record failures)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        {
+          "expr": "rate(x402_underpayment_debts_recorded_total[5m])",
+          "legendFormat": "debts recorded"
+        },
+        {
+          "expr": "rate(x402_onchain_record_failures_total[15m])",
+          "legendFormat": "on-chain record failures"
+        }
+      ]
+    },
+    {
+      "title": "Node process health",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
+      "targets": [
+        {
+          "expr": "nodejs_eventloop_lag_seconds",
+          "legendFormat": "event loop lag (s)"
+        },
+        {
+          "expr": "nodejs_heap_size_total_bytes",
+          "legendFormat": "heap total (B)"
+        },
+        {
+          "expr": "rate(process_cpu_seconds_total[1m]) * 100",
+          "legendFormat": "cpu %"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["x402", "stellar"],
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "label": "Prometheus"
+      }
+    ]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "title": "x402 LLM Gateway",
+  "uid": "x402-gateway"
+}
