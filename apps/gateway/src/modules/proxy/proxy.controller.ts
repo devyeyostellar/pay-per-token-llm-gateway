@@ -783,6 +783,21 @@ export class ProxyController {
     // never block it.
     if (payment?.payerAddress) {
       const config = getConfig();
+
+      // Operational signal (not an error): a per-token route is being served
+      // without on-chain settlement — actual usage is metered and debited
+      // locally, but never charged to the caller's escrow balance.
+      if (!config.payment.escrowSettlementEnabled) {
+        logger.warn('Per-token route used without escrow settlement enabled', {
+          traceId,
+          routeId: route.id,
+          providerId: route.providerId,
+          actualCost,
+          paidAmount: payment?.amount?.toString(),
+          hint: 'Set ESCROW_SETTLEMENT_ENABLED=true + CONTRACT_ADMIN_SECRET to charge actual usage on-chain',
+        });
+      }
+
       settleEscrow({
         enabled: config.payment.escrowSettlementEnabled,
         contractId: config.contracts.creditEscrow,

@@ -7,7 +7,7 @@
 
 ## Issue 1: Wire Credit Escrow Settlement in the Gateway
 
-**GitHub:** [#25](https://github.com/Pay-Per-Token-LLM-Gateway/pay-per-token-llm-gateway/issues/25) · **Status:** open
+**GitHub:** [#25](https://github.com/Pay-Per-Token-LLM-Gateway/pay-per-token-llm-gateway/issues/25) · **Status:** ✅ implemented — gateway settlement wiring, disabled-warning, unit + e2e tests (2026-09-09)
 
 **Title:** `feat: wire credit-escrow settlement for metered per-token pricing`
 
@@ -50,7 +50,7 @@ Per-token pricing detects underpayment (`applyMeteredPricing` logs `isUnderpaid`
 
 ## Issue 2: Implement SDK External Signer (`signTransaction` callback)
 
-**GitHub:** [#26](https://github.com/Pay-Per-Token-LLM-Gateway/pay-per-token-llm-gateway/issues/26) · **Status:** open
+**GitHub:** [#26](https://github.com/Pay-Per-Token-LLM-Gateway/pay-per-token-llm-gateway/issues/26) · **Status:** ✅ implemented — external signer path + error-path tests (2026-09-09)
 
 **Title:** `fix: implement external signer path in SDK executePayment`
 
@@ -102,7 +102,7 @@ The README and `@x402/types` advertise "Stellar wallet integration (secret key o
 
 ## Issue 3: Clamp Unbounded Pagination Limits in Soroban Contracts
 
-**GitHub:** [#27](https://github.com/Pay-Per-Token-LLM-Gateway/pay-per-token-llm-gateway/issues/27) · **Status:** open
+**GitHub:** [#27](https://github.com/Pay-Per-Token-LLM-Gateway/pay-per-token-llm-gateway/issues/27) · **Status:** ✅ implemented — MAX_PAGE_SIZE clamp + saturating_add in all three contracts, clamp/overflow tests + property tests + gas benches (2026-09-09)
 
 **Title:** `fix(contracts): clamp unbounded limit in paginated queries to prevent gas DoS`
 
@@ -428,7 +428,7 @@ The credit-escrow contract's test suite covers happy-path deposit/charge/refund/
 
 ## Issue 11: Automate Provider Payouts via the Multisig Soroban Contract
 
-**GitHub:** [#40](https://github.com/Pay-Per-Token-LLM-Gateway/pay-per-token-llm-gateway/issues/40) · **Status:** open
+**GitHub:** [#40](https://github.com/Pay-Per-Token-LLM-Gateway/pay-per-token-llm-gateway/issues/40) · **Status:** ✅ implemented — multisig-client, PayoutProposal model/migration, payout service + admin endpoints, threshold-1 auto-approve, unit tests (2026-09-09)
 
 **Title:** `feat: automate provider payouts via the multisig Soroban contract`
 
@@ -631,7 +631,7 @@ The `multisig` Soroban contract (`contracts/multisig`) implements `propose` / `a
 
 ## Issue 16: Add Unit Tests for `@x402/sdk` (call, streaming, signer paths)
 
-**GitHub:** [#45](https://github.com/Pay-Per-Token-LLM-Gateway/pay-per-token-llm-gateway/issues/45) · **Status:** open
+**GitHub:** [#45](https://github.com/Pay-Per-Token-LLM-Gateway/pay-per-token-llm-gateway/issues/45) · **Status:** ✅ implemented — SDK unit suite (19 tests, 89.9% stmts) covering call/stream/signer paths + error paths, threshold enforced in CI (2026-09-09)
 
 **Title:** `test: add unit tests for @x402/sdk (call, streaming, signer paths)`
 

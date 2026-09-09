@@ -26,6 +26,7 @@ model Provider {
   notifications        Notification[]
   prepaidCredits       PrepaidCredit[]
   underpaymentDebts    UnderpaymentDebt[]
+  payoutProposals      PayoutProposal[]
 
   @@index([walletAddress])
   @@index([active])
@@ -144,6 +145,46 @@ model PrepaidCredit {
 
   @@index([walletId])
   @@index([providerId])
+}
+
+// ── Payout Proposals (multisig automation) ───
+//
+// Tracks provider payouts proposed through the multisig Soroban contract.
+// The gateway computes confirmed provider revenue from `Payment` rows and
+// proposes a transfer of that amount from the multisig wallet to the
+// provider's `payoutWalletAddress`; M-of-N signer approvals on-chain execute
+// the transfer. This table is the off-chain ledger mirroring the on-chain
+// proposal (status transitions below are written by the payout service).
+
+model PayoutProposal {
+  id          String   @id @default(uuid())
+  providerId  String
+  /// On-chain proposal id returned by multisig.propose (null until proposed).
+  proposalId  Int?
+  /// Destination of the payout — the provider's payoutWalletAddress.
+  destination String
+  /// Payout amount in stroops.
+  amount      BigInt
+  asset       String   @default("USDC")
+  /// pending | proposed | approved | executed | failed | cancelled
+  status      String   @default("pending")
+  /// Approving signer addresses (mirrors on-chain approvals for the dashboard).
+  approvals   Json?
+  /// Multisig threshold at propose time (for threshold-1 auto-approve).
+  threshold   Int?
+  /// Stellar transaction hash of the on-chain proposal/execution.
+  txHash      String?
+  /// Human-readable failure reason when the on-chain call failed.
+  error       String?
+  executedAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  provider    Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@index([providerId, status])
+  @@index([status])
+  @@index([createdAt])
 }
 
 // ── Notifications ────────────────────────────

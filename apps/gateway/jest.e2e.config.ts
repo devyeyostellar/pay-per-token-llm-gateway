@@ -9,6 +9,14 @@ const config: Config = {
   },
   moduleFileExtensions: ['ts', 'js', 'html'],
   testMatch: ['**/*.e2e-spec.ts'],
+  // Network-bound contract clients are unit-tested (escrow/multisig specs);
+  // they are mocked out of the e2e paths, so excluding them here keeps the
+  // e2e threshold measuring the actual request/response wiring.
+  coveragePathIgnorePatterns: [
+    '/node_modules/',
+    '/modules/x402/(escrow-client|multisig-client|contract-client).ts$',
+    '/modules/x402/soroban-utils.ts$',
+  ],
   // Pin NODE_ENV=test + a throwaway JWT_SECRET (see file) so the H3
   // config fail-fast hardening doesn't block test runs.
   setupFiles: ['<rootDir>/jest.setup.ts'],

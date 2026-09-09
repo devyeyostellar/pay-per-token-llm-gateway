@@ -151,11 +151,14 @@ Pricing validation: `flat` requires `flatPrice`; `per_token` requires
 
 ## 8. Admin (auth required)
 
-| Method | Path                   | Notes                                                                             |
-| ------ | ---------------------- | --------------------------------------------------------------------------------- |
-| `GET`  | `/api/v1/admin/stats`  | Gateway statistics for the authenticated wallet                                   |
-| `GET`  | `/api/v1/admin/health` | Authenticated health summary                                                      |
-| `GET`  | `/api/v1/admin/audit`  | `?providerId=&page=&limit=&action=&entity=` — audit log scoped to owned providers |
+| Method | Path                                | Notes                                                                                                                                                                                                                                                                                                                                                             |
+| ------ | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/api/v1/admin/stats`               | Gateway statistics for the authenticated wallet                                                                                                                                                                                                                                                                                                                   |
+| `GET`  | `/api/v1/admin/health`              | Authenticated health summary                                                                                                                                                                                                                                                                                                                                      |
+| `GET`  | `/api/v1/admin/audit`               | `?providerId=&page=&limit=&action=&entity=` — audit log scoped to owned providers                                                                                                                                                                                                                                                                                 |
+| `GET`  | `/api/v1/admin/payouts`             | `?providerId=&status=&page=&limit=` — payout proposals scoped to owned providers                                                                                                                                                                                                                                                                                  |
+| `POST` | `/api/v1/admin/payouts/propose`     | Body: `{ providerId, amount? }` — propose a payout of pending confirmed revenue through the multisig contract. `amount` (stroops) defaults to all pending revenue and is capped at it. Requires `PAYOUT_AUTOMATION_ENABLED=true` + `CONTRACT_ADMIN_SECRET`. Threshold-1 multisig wallets are auto-approved; higher thresholds stay `proposed` for signer approval |
+| `POST` | `/api/v1/admin/payouts/:id/approve` | Approve a payout proposal as a multisig signer (signed with `CONTRACT_ADMIN_SECRET`; the contract enforces signer authorization). Reaching the threshold executes the transfer on-chain                                                                                                                                                                           |
 
 ## 9. Auth
 

@@ -95,13 +95,25 @@ else
 fi
 export ISSUER_SECRET
 
-# ── 5. Build the gateway if needed ──────────────────────────
-if [ ! -f dist/apps/gateway/main.js ]; then
-  log "Building gateway (first run)"
-  pnpm nx build gateway
-fi
+# ── 5. Build the gateway ─────────────────────────────────────
+# Always rebuild: the journey exercises the current source, and a stale
+# binary (e.g. one missing the payout endpoints) silently breaks assertions.
+log "Building gateway"
+pnpm nx build gateway
 
-# ── 6. Start the gateway ────────────────────────────────────
+# ── 6. Start the gateway fresh (deterministic state) ─────────
+# Stop any previous run's gateway and flush Redis so replay-protection and
+# session state never leak between runs — each run starts from a clean slate
+# (fresh payer keypair + fresh Redis).
+if [ -f "$STATE_DIR/gateway.pid" ] && kill -0 "$(cat "$STATE_DIR/gateway.pid")" 2>/dev/null; then
+  log "Stopping previous gateway (pid $(cat "$STATE_DIR/gateway.pid"))"
+  kill "$(cat "$STATE_DIR/gateway.pid")" 2>/dev/null || true
+  sleep 1
+  rm -f "$STATE_DIR/gateway.pid"
+fi
+log "Flushing journey Redis (clean replay-protection + session state)"
+docker exec "$REDIS_NAME" redis-cli flushall >/dev/null 2>&1 || true
+
 log "Starting gateway on port ${GATEWAY_PORT}"
 JWT_SECRET="$(openssl rand -hex 32)"
 cat > "$STATE_DIR/gateway.env" <<EOF
@@ -119,23 +131,19 @@ EOF
 # shellcheck disable=SC1091
 set -a; . "$STATE_DIR/gateway.env"; set +a
 
-if [ -f "$STATE_DIR/gateway.pid" ] && kill -0 "$(cat "$STATE_DIR/gateway.pid")" 2>/dev/null; then
-  echo "  (gateway already running, pid $(cat "$STATE_DIR/gateway.pid"))"
-else
-  NODE_PATH=packages/database/node_modules:node_modules \
-    nohup node dist/apps/gateway/main.js > "$STATE_DIR/gateway.log" 2>&1 &
-  echo $! > "$STATE_DIR/gateway.pid"
-  for i in $(seq 1 60); do
-    if curl -sf "$GATEWAY_URL/health" >/dev/null 2>&1; then break; fi
-    sleep 1
-  done
-  curl -sf "$GATEWAY_URL/health" >/dev/null || {
-    echo "gateway failed to start — see $STATE_DIR/gateway.log" >&2
-    tail -30 "$STATE_DIR/gateway.log" >&2
-    exit 1
-  }
-  echo "  gateway healthy"
-fi
+NODE_PATH=packages/database/node_modules:node_modules \
+  nohup node dist/apps/gateway/main.js > "$STATE_DIR/gateway.log" 2>&1 &
+echo $! > "$STATE_DIR/gateway.pid"
+for i in $(seq 1 60); do
+  if curl -sf "$GATEWAY_URL/health" >/dev/null 2>&1; then break; fi
+  sleep 1
+done
+curl -sf "$GATEWAY_URL/health" >/dev/null || {
+  echo "gateway failed to start — see $STATE_DIR/gateway.log" >&2
+  tail -30 "$STATE_DIR/gateway.log" >&2
+  exit 1
+}
+echo "  gateway healthy"
 
 # ── 7. Run the journey ──────────────────────────────────────
 log "Running live testnet journey"
@@ -153,13 +161,104 @@ NODE_PATH="packages/wallet/node_modules:packages/database/node_modules:apps/gate
 JOURNEY_EXIT=$?
 set -e
 
-echo
-if [ $JOURNEY_EXIT -eq 0 ]; then
-  echo -e "\033[1;32m═══════════════════════════════════════════════════════════════"
-  echo "  LIVE TESTNET JOURNEY: ALL CHECKS PASSED"
-  echo "  Evidence: docs/evidence/testnet-journey.json"
-  echo "═══════════════════════════════════════════════════════════════\033[0m"
-else
+if [ $JOURNEY_EXIT -ne 0 ]; then
   echo -e "\033[1;31mLIVE TESTNET JOURNEY FAILED (exit $JOURNEY_EXIT)\033[0m" >&2
+  exit $JOURNEY_EXIT
 fi
-exit $JOURNEY_EXIT
+
+# ── 8. Provider payout leg (#40) — optional, requires the multisig wasm ──
+# Deploys a FRESH threshold-1 multisig, funds it with the journey USDC,
+# restarts the gateway with PAYOUT_AUTOMATION_ENABLED=true + the new
+# MULTISIG_CONTRACT, then drives the admin payout flow and verifies the
+# on-chain transfer. Skipped when the multisig wasm is not built.
+if [ -f "contracts/multisig/target/wasm32-unknown-unknown/release/multisig.wasm" ]; then
+  log "Running provider payout leg (#40)"
+
+  # Persisted signer: owns the payout provider AND is the multisig signer.
+  PAYOUT_STATE_DIR="$STATE_DIR"
+  SIGNER_STATE="$STATE_DIR/payout-signer.env"
+  if [ -f "$SIGNER_STATE" ]; then
+    # shellcheck disable=SC1090
+    . "$SIGNER_STATE"
+    echo "  (reusing payout signer from $SIGNER_STATE)"
+  else
+    PAYOUT_SIGNER_SECRET="$(cd packages/wallet && node -e "const {Keypair}=require('@stellar/stellar-sdk'); process.stdout.write(Keypair.random().secret())")"
+    echo "PAYOUT_SIGNER_SECRET=$PAYOUT_SIGNER_SECRET" > "$SIGNER_STATE"
+    echo "  (generated fresh payout signer)"
+  fi
+  export PAYOUT_SIGNER_SECRET
+
+  # Phase A — deploy + fund the fresh multisig (no gateway interaction).
+  PAYOUT_MODE=deploy \
+  GATEWAY_URL="$GATEWAY_URL" \
+  ISSUER_SECRET="$ISSUER_SECRET" \
+  PAYOUT_SIGNER_SECRET="$PAYOUT_SIGNER_SECRET" \
+  DATABASE_URL="$DATABASE_URL" \
+  PAYOUT_STATE_FILE="$STATE_DIR/payout-state.json" \
+  TS_NODE_TRANSPILE_ONLY=1 \
+  NODE_PATH="packages/wallet/node_modules:packages/database/node_modules:apps/gateway/node_modules:node_modules" \
+    npx ts-node --project apps/gateway/tsconfig.json scripts/testnet-payout.ts
+
+  # Read the fresh multisig id for the gateway restart.
+  MULTISIG_CONTRACT="$(jq -r .multisigId "$STATE_DIR/payout-state.json")"
+  echo "  fresh multisig: $MULTISIG_CONTRACT"
+
+  # Restart the gateway with payout automation enabled. The fresh gateway.env
+  # keeps the base vars and adds the payout-only vars (idempotent — repeated
+  # runs don't duplicate the block because it is rewritten, not appended).
+  log "Restarting gateway with payout automation enabled"
+  if [ -f "$STATE_DIR/gateway.pid" ] && kill -0 "$(cat "$STATE_DIR/gateway.pid")" 2>/dev/null; then
+    kill "$(cat "$STATE_DIR/gateway.pid")" 2>/dev/null || true
+    sleep 1
+    rm -f "$STATE_DIR/gateway.pid"
+  fi
+  docker exec "$REDIS_NAME" redis-cli flushall >/dev/null 2>&1 || true
+  # Strip any previous payout block, then re-add it.
+  sed -i '/^PAYOUT_AUTOMATION_ENABLED=/d;/^MULTISIG_CONTRACT=/d;/^CONTRACT_ADMIN_SECRET=/d' "$STATE_DIR/gateway.env"
+  cat >> "$STATE_DIR/gateway.env" <<EOF
+PAYOUT_AUTOMATION_ENABLED=true
+MULTISIG_CONTRACT=$MULTISIG_CONTRACT
+CONTRACT_ADMIN_SECRET=$PAYOUT_SIGNER_SECRET
+EOF
+  # shellcheck disable=SC1091
+  set -a; . "$STATE_DIR/gateway.env"; set +a
+  NODE_PATH=packages/database/node_modules:node_modules \
+    nohup node dist/apps/gateway/main.js >> "$STATE_DIR/gateway.log" 2>&1 &
+  echo $! > "$STATE_DIR/gateway.pid"
+  for i in $(seq 1 60); do
+    if curl -sf "$GATEWAY_URL/health" >/dev/null 2>&1; then break; fi
+    sleep 1
+  done
+  curl -sf "$GATEWAY_URL/health" >/dev/null || {
+    echo "gateway failed to restart — see $STATE_DIR/gateway.log" >&2
+    tail -20 "$STATE_DIR/gateway.log" >&2
+    exit 1
+  }
+  echo "  gateway healthy (payout mode)"
+
+  # Phase B — drive the payout flow against the fresh multisig.
+  set +e
+  PAYOUT_MODE=run \
+  GATEWAY_URL="$GATEWAY_URL" \
+  ISSUER_SECRET="$ISSUER_SECRET" \
+  PAYOUT_SIGNER_SECRET="$PAYOUT_SIGNER_SECRET" \
+  DATABASE_URL="$DATABASE_URL" \
+  PAYOUT_STATE_FILE="$STATE_DIR/payout-state.json" \
+  EVIDENCE_PATH="docs/evidence/testnet-journey.json" \
+  TS_NODE_TRANSPILE_ONLY=1 \
+  NODE_PATH="packages/wallet/node_modules:packages/database/node_modules:apps/gateway/node_modules:node_modules" \
+    npx ts-node --project apps/gateway/tsconfig.json scripts/testnet-payout.ts
+  PAYOUT_EXIT=$?
+  set -e
+
+  if [ $PAYOUT_EXIT -ne 0 ]; then
+    echo -e "\033[1;31mPAYOUT LEG FAILED (exit $PAYOUT_EXIT)\033[0m" >&2
+    exit $PAYOUT_EXIT
+  fi
+  echo -e "\033[1;32m  PAYOUT LEG PASSED — evidence in docs/evidence/testnet-journey.json\033[0m"
+fi
+
+echo -e "\033[1;32m═══════════════════════════════════════════════════════════════"
+echo "  LIVE TESTNET JOURNEY: ALL CHECKS PASSED"
+echo "  Evidence: docs/evidence/testnet-journey.json"
+echo "═══════════════════════════════════════════════════════════════\033[0m"

@@ -87,6 +87,17 @@ describe('config security hardening', () => {
       expect(config.security.trustProxy).toBe('1');
     });
 
+    it('defaults payoutAutomationEnabled to false and reads it from PAYOUT_AUTOMATION_ENABLED', () => {
+      process.env.NODE_ENV = 'test';
+      process.env.JWT_SECRET = 'a-real-random-256-bit-secret';
+
+      delete process.env.PAYOUT_AUTOMATION_ENABLED;
+      expect(loadConfig().payment.payoutAutomationEnabled).toBe(false);
+
+      process.env.PAYOUT_AUTOMATION_ENABLED = 'true';
+      expect(loadConfig().payment.payoutAutomationEnabled).toBe(true);
+    });
+
     it('caches the config singleton via getConfig and replaces it via setConfig', () => {
       process.env.NODE_ENV = 'test';
       process.env.JWT_SECRET = 'a-real-random-256-bit-secret';

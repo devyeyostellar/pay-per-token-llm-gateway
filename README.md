@@ -598,7 +598,7 @@ See [DEPLOYMENT.md](./DEPLOYMENT.md) for the complete step-by-step guide.
 - [ ] Multi-provider routing with load balancing
 - [ ] Python SDK with LangChain integration
 - [ ] Kubernetes deployment manifests
-- [ ] Provider payout automation via multisig contracts
+- [x] Provider payout automation via multisig contracts
 - [ ] Prepaid credit escrow contract integration (opt-in experimental today — see [MAINNET_READINESS.md](./MAINNET_READINESS.md))
 
 ### 💡 v3 — Planned
