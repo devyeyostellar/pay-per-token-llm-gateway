@@ -1,3 +1,90 @@
 packages:
   - 'apps/*'
   - 'packages/*'
+
+# pnpm v11 no longer reads the `pnpm` field in package.json — all settings
+# live here. `allowBuilds` replaces the legacy `onlyBuiltDependencies` /
+# `neverBuiltDependencies` keys (boolean: true = run the package's install
+# scripts, false = skip). These are exactly the packages the workspace needs
+# to run postinstall scripts (Prisma engine download, esbuild binary, Nx
+# native binaries, husky via the root prepare script).
+allowBuilds:
+  '@nestjs/core': true
+  '@parcel/watcher': true
+  '@prisma/client': true
+  '@prisma/engines': true
+  # Telemetry beacon (scarf.sh) shipped by swagger-ui-dist — explicitly
+  # declined so pnpm stops warning about (and failing on) its install
+  # script. Not needed by the gateway.
+  '@scarf/scarf': false
+  esbuild: true
+  nx: true
+  prisma: true
+  # napi native binary used by nx 22 for workspace resolution
+  unrs-resolver: true
+
+# Dependency overrides previously lived in the package.json `pnpm` field,
+# which pnpm v11 ignores. Each override here fixes a known advisory in a
+# transitive runtime dependency with a real, installable patched version:
+#   - koa:      RCE/SSRF CVEs fixed in 2.15.4 (NestJS dev tooling transitive)
+#   - express:  path-to-regexp ReDoS (CVE-2024-45296) + send/qs advisories,
+#               fixed in 4.21.x / 5.2.x — Express is a gateway runtime
+#               dependency (via @nestjs/platform-express)
+#   - ws:       Sec-WebSocket-Protocol ReDoS (CVE-2025-29981), fixed in
+#               8.21.0
+#   - body-parser: invalid-limit DoS (GHSA-v422-hmwv-36x6), fixed in 1.20.6
+#
+# Runtime-reachable transitive advisories with installable patched releases.
+#   - multer: DoS CVEs (CVE-2026-77037 / 77078 / 82333) affect <2.3.0;
+#     platform-express pins the vulnerable 2.2.0, so force 2.3.0 via override
+#   - svgo: ReDoS advisories (GHSA-4vpr-x523-8j87 / GHSA-w27v-7q3p-w38r)
+#     affect 3.3.4, patched in 3.3.5 — scoped to the SVGR build chain only
+# See MAINNET_READINESS.md for the residual ledger.
+overrides:
+  koa: '>=2.15.4'
+  # NestJS 11 platform-express is built against Express 5 (declares 5.2.1);
+  # pinning the override to the 5.x line keeps the whole runtime on one
+  # patched Express major instead of silently resolving back to 4.x.
+  express: '>=5.2.1'
+  ws: '>=8.21.0'
+  body-parser: '>=1.20.6'
+  qs: '>=6.16.0'
+  # uuid <12 keeps the CommonJS build (12+ is ESM-only and would break the
+  # CJS NestJS integration); 11.1.1 is the advisory's patched floor.
+  uuid: '>=11.1.1 <12'
+  multer: '>=2.3.0'
+  # svgo ReDoS (GHSA-w27v-7q3p-w38r, GHSA-4vpr-x523-8j87) patched in 3.3.5;
+  # scoped to @svgr/plugin-svgo's ^3 range (a forced 4.x jump would be an
+  # unverified API change for the plugin); postcss-svgo keeps its own svgo 4.
+  '@svgr/plugin-svgo>svgo': '>=3.3.5 <4'
+  lodash: '>=4.18.1'
+  js-yaml: '>=4.3.1'
+  toml: '>=4.2.0'
+  postcss: '>=8.5.23'
+  file-type: '>=21.3.2'
+  # Dev/build-tooling advisories with installable patched versions. All are
+  # build-time only (webpack/eslint/nx chains) and never shipped to runtime.
+  # minimatch: advisory only covers the 9.x line (<9.0.7), so bump it but
+  # keep istanbul's test-exclude on its compatible 3.x (9.x's CJS export is
+  # no longer callable and breaks coverage instrumentation).
+  minimatch: '>=9.0.7 <10'
+  'test-exclude>minimatch': '^3.0.4'
+  # The nx 22 toolchain pulls supports-color@7.2.0 into the @babel/core peer
+  # chain while next (and the rest of the tree) uses 8.1.1, which splits
+  # @babel/core -> next into TWO store instances. The root .bin/next shim then
+  # resolves one instance while apps/dashboard resolves the other, so `next
+  # build` mixes two next copies and the pages-router /404 prerender fails with
+  # "<Html> should not be imported outside of pages/_document". Pinning one
+  # version collapses the tree to a single next instance (verified: build green).
+  supports-color: '8.1.1'
+  # sass is an optional peer of next; keep the 1.102 line that shipped with the
+  # known-working build rather than the 1.104 line the nx 22 tree pulls.
+  sass: '1.102.0'
+  # nx 22 pins brace-expansion to exactly 5.0.8 (GHSA-rgw5-rvv9-x895, DoS via
+  # unbounded intermediate arrays). Scoped override replaces only that pin — a
+  # global override would force minimatch/glob's ^2.x consumers onto the 5.x
+  # API and break jest/eslint. Build-time tooling only.
+  'brace-expansion@5.0.8': '5.0.9'
+  serialize-javascript: '>=7.0.5'
+  fast-uri: '>=3.1.6'
+  adm-zip: '>=0.6.0'

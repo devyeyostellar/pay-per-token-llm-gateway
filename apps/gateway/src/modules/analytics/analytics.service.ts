@@ -3,6 +3,15 @@ import { prisma } from '@x402/database';
 import type { AnalyticsEvent } from '@x402/analytics';
 import type { AnalyticsSummary, TimeSeriesDataPoint } from '@x402/types';
 
+/** Row shape returned by the Postgres time-series aggregation query. */
+interface TimeSeriesBucketRow {
+  bucket_epoch: bigint;
+  paid_requests: bigint;
+  unpaid_requests: bigint;
+  revenue: bigint | null;
+  failed_verifications: bigint;
+}
+
 @Injectable()
 export class AnalyticsService {
   /**
@@ -15,7 +24,7 @@ export class AnalyticsService {
       where: { walletAddress: ownerAddress },
       select: { id: true },
     });
-    return providers.map((p) => p.id);
+    return providers.map((provider: { id: string }) => provider.id);
   }
 
   /** Record an unpaid (402) request event. */
@@ -156,11 +165,17 @@ export class AnalyticsService {
       take: 10,
     });
 
-    const topCallers = topCallerRows.map((row) => ({
-      address: row.callerAddress ?? 'unknown',
-      totalSpent: (row._sum.amount || 0n).toString(),
-      requestCount: row._count.id,
-    }));
+    const topCallers = topCallerRows.map(
+      (row: {
+        callerAddress: string | null;
+        _sum: { amount: bigint | null };
+        _count: { id: number };
+      }) => ({
+        address: row.callerAddress ?? 'unknown',
+        totalSpent: (row._sum.amount || 0n).toString(),
+        requestCount: row._count.id,
+      }),
+    );
 
     // Top routes: group by route
     const topRouteRows = await prisma.analyticsEvent.groupBy({
@@ -172,11 +187,13 @@ export class AnalyticsService {
       take: 10,
     });
 
-    const topRoutes = topRouteRows.map((row) => ({
-      path: row.route,
-      requestCount: row._count.id,
-      revenue: (row._sum.amount || 0n).toString(),
-    }));
+    const topRoutes = topRouteRows.map(
+      (row: { route: string; _count: { id: number }; _sum: { amount: bigint | null } }) => ({
+        path: row.route,
+        requestCount: row._count.id,
+        revenue: (row._sum.amount || 0n).toString(),
+      }),
+    );
 
     return {
       totalRequests: totalCount,
@@ -192,8 +209,9 @@ export class AnalyticsService {
   }
 
   /**
-   * Get time-series data using Prisma queries with time bucketing, scoped to
-   * the authenticated wallet's providers.
+   * Get time-series data using a single Postgres aggregation query, scoped to
+   * the authenticated wallet's providers. Uses epoch-arithmetic bucketing to
+   * support arbitrary intervals without an unbounded `findMany`.
    */
   async getTimeSeries(
     providerId: string,
@@ -208,22 +226,26 @@ export class AnalyticsService {
 
     const now = new Date();
     const startTime = new Date(now.getTime() - durationHours * 60 * 60 * 1000);
+    const intervalSeconds = intervalMinutes * 60;
 
-    // Fetch all events in the time window
-    const events = await prisma.analyticsEvent.findMany({
-      where: {
-        providerId,
-        createdAt: { gte: startTime },
-      },
-      select: {
-        type: true,
-        amount: true,
-        createdAt: true,
-      },
-      orderBy: { createdAt: 'asc' },
-    });
+    // One SQL query: aggregate time-series data using Postgres so the
+    // database does the bucketing — no unbounded findMany into memory.
+    const rows = await prisma.$queryRaw<TimeSeriesBucketRow[]>`
+      SELECT
+        (EXTRACT(EPOCH FROM "createdAt")::bigint / ${intervalSeconds})::bigint * ${intervalSeconds} AS bucket_epoch,
+        COUNT(*) FILTER (WHERE type = 'request:paid')::int AS paid_requests,
+        COUNT(*) FILTER (WHERE type = 'request:unpaid')::int AS unpaid_requests,
+        COALESCE(SUM(amount) FILTER (WHERE type = 'request:paid'), 0) AS revenue,
+        COUNT(*) FILTER (WHERE type = 'payment:failed')::int AS failed_verifications
+      FROM "AnalyticsEvent"
+      WHERE "providerId" = ${providerId}
+        AND "createdAt" >= ${startTime}
+        AND "createdAt" <= ${now}
+      GROUP BY bucket_epoch
+      ORDER BY bucket_epoch
+    `;
 
-    // Build time buckets
+    // Build zero-filled buckets
     const intervalMs = intervalMinutes * 60 * 1000;
     const buckets: Map<number, TimeSeriesDataPoint> = new Map();
 
@@ -237,29 +259,16 @@ export class AnalyticsService {
       });
     }
 
-    // Fill buckets from events
-    for (const event of events) {
-      const eventTime = event.createdAt.getTime();
-      const bucketTime =
-        startTime.getTime() +
-        Math.floor((eventTime - startTime.getTime()) / intervalMs) * intervalMs;
+    // Fill buckets from SQL results
+    for (const row of rows) {
+      const bucketTime = Number(row.bucket_epoch) * 1000; // epoch seconds → ms
       const bucket = buckets.get(bucketTime);
       if (!bucket) continue;
 
-      switch (event.type) {
-        case 'request:paid':
-          bucket.paidRequests++;
-          if (event.amount) {
-            bucket.revenue = (BigInt(bucket.revenue) + event.amount).toString();
-          }
-          break;
-        case 'request:unpaid':
-          bucket.unpaidRequests++;
-          break;
-        case 'payment:failed':
-          bucket.failedVerifications++;
-          break;
-      }
+      bucket.paidRequests = Number(row.paid_requests);
+      bucket.unpaidRequests = Number(row.unpaid_requests);
+      bucket.revenue = (row.revenue ?? 0n).toString();
+      bucket.failedVerifications = Number(row.failed_verifications);
     }
 
     return Array.from(buckets.values()).sort(
@@ -296,14 +305,24 @@ export class AnalyticsService {
       take: filter?.limit || 100,
     });
 
-    return rows.map((r) => ({
-      type: r.type as AnalyticsEvent['type'],
-      route: r.route,
-      providerId: r.providerId,
-      callerAddress: r.callerAddress || undefined,
-      amount: r.amount?.toString() || undefined,
-      asset: r.asset || undefined,
-      responseTime: r.responseTime || undefined,
-    }));
+    return rows.map(
+      (row: {
+        type: string;
+        route: string;
+        providerId: string;
+        callerAddress: string | null;
+        amount: bigint | null;
+        asset: string | null;
+        responseTime: number | null;
+      }) => ({
+        type: row.type as AnalyticsEvent['type'],
+        route: row.route,
+        providerId: row.providerId,
+        callerAddress: row.callerAddress || undefined,
+        amount: row.amount?.toString() || undefined,
+        asset: row.asset || undefined,
+        responseTime: row.responseTime || undefined,
+      }),
+    );
   }
 }

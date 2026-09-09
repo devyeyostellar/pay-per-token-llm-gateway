@@ -138,13 +138,16 @@ describe('amount unit conversion (units ↔ stroops)', () => {
   });
 });
 
-function verify(opts: { quote: Quote; txHash?: string }) {
+function verify(opts: { quote: Quote; txHash?: string; allowPathPayments?: boolean }) {
   return verifyStellarPayment({
     txHash: opts.txHash ?? TX_HASH,
     quote: opts.quote,
     horizonUrl: HORIZON_URL,
     sorobanRpcUrl: 'https://soroban-testnet.stellar.org',
     networkPassphrase: 'Test SDF Network ; September 2015',
+    ...(opts.allowPathPayments !== undefined && {
+      allowPathPayments: opts.allowPathPayments,
+    }),
   });
 }
 
@@ -303,6 +306,65 @@ describe('verifyStellarPayment', () => {
 
       expect(result.verified).toBe(true);
       expect(result.amount).toBe('1000000');
+    });
+
+    it('rejects a path payment when allowPathPayments is false (mainnet policy)', async () => {
+      const quote = makeQuote(makeRoute());
+      (global as any).fetch = mockHorizonFetch({
+        tx: txData({}, quote),
+        ops: opsData([
+          {
+            type: 'path_payment_strict_receive',
+            asset_code: 'USDC',
+            asset_issuer: USDC_ISSUER,
+            to: PAYMENT_ADDRESS,
+            from: 'GPAYERACCOUNT123',
+            amount: '0.1000000', // exactly the flat-rate quote amount
+          },
+        ]),
+      });
+
+      const result = await verify({ quote, allowPathPayments: false });
+
+      expect(result.verified).toBe(false);
+      expect(result.failureReason).toBe(
+        'Path payments are not accepted on this network. Direct USDC payments only.',
+      );
+    });
+
+    it('still accepts a direct payment op when allowPathPayments is false', async () => {
+      const quote = makeQuote(makeRoute());
+      (global as any).fetch = mockHorizonFetch({
+        tx: txData({}, quote),
+        ops: opsData([paymentOp({ amount: '0.1000000' })]),
+      });
+
+      const result = await verify({ quote, allowPathPayments: false });
+
+      expect(result.verified).toBe(true);
+      expect(result.amount).toBe('1000000');
+    });
+
+    it('ignores unrelated path ops (wrong asset) without a confusing refusal', async () => {
+      const quote = makeQuote(makeRoute());
+      (global as any).fetch = mockHorizonFetch({
+        tx: txData({}, quote),
+        ops: opsData([
+          {
+            type: 'path_payment_strict_send',
+            asset_code: 'XLM',
+            asset_type: 'native',
+            to: PAYMENT_ADDRESS,
+            from: 'GPAYERACCOUNT123',
+            amount: '10.0000000',
+          },
+        ]),
+      });
+
+      const result = await verify({ quote, allowPathPayments: false });
+
+      expect(result.verified).toBe(false);
+      expect(result.failureReason).toBe('No matching payment operation found');
     });
   });
 
@@ -597,6 +659,120 @@ describe('verifyStellarPayment', () => {
 
       expect(result.verified).toBe(false);
       expect(result.failureReason).toBe('Verification error: network down');
+    });
+  });
+
+  describe('quote validity window (issuedAt lower bound)', () => {
+    // SECURITY: the verifier must reject a payment made BEFORE the quote was
+    // issued. Historical payments to the provider's address are public on
+    // Horizon; without the lower bound an attacker could present an old
+    // payment against a fresh quote for one free access (the single-use
+    // guards only stop re-use of an already-claimed hash, not first use of
+    // an old one).
+    it('rejects a payment made before the quote was issued', async () => {
+      const quote = makeQuote(makeRoute());
+      (global as any).fetch = mockHorizonFetch({
+        tx: txData(
+          {
+            // 10 minutes before the quote was issued
+            created_at: new Date((quote.issuedAt - 600) * 1000).toISOString(),
+          },
+          quote,
+        ),
+        ops: opsData([paymentOp({ amount: '0.1000000' })]),
+      });
+
+      const result = await verify({ quote });
+
+      expect(result.verified).toBe(false);
+      expect(result.failureReason).toBe('Payment was made before the quote was issued');
+    });
+
+    it('accepts a payment made exactly at quote issuance', async () => {
+      const quote = makeQuote(makeRoute());
+      (global as any).fetch = mockHorizonFetch({
+        tx: txData(
+          {
+            created_at: new Date(quote.issuedAt * 1000).toISOString(),
+          },
+          quote,
+        ),
+        ops: opsData([paymentOp({ amount: '0.1000000' })]),
+      });
+
+      const result = await verify({ quote });
+
+      expect(result.verified).toBe(true);
+    });
+
+    it('accepts a payment made after issuance but before expiry', async () => {
+      const quote = makeQuote(makeRoute());
+      (global as any).fetch = mockHorizonFetch({
+        tx: txData({}, quote), // created_at = now, inside the window
+        ops: opsData([paymentOp({ amount: '0.1000000' })]),
+      });
+
+      const result = await verify({ quote });
+
+      expect(result.verified).toBe(true);
+    });
+
+    it('skips the lower bound for legacy quotes without issuedAt (backward compat)', async () => {
+      const quote = makeQuote(makeRoute());
+      // Simulate a quote stored before the issuedAt hardening: the field is
+      // absent, so the lower-bound check must be skipped, not crash.
+      delete (quote as Partial<Quote>).issuedAt;
+      (global as any).fetch = mockHorizonFetch({
+        tx: txData(
+          {
+            created_at: new Date(Date.now() - 3_600_000).toISOString(), // 1h old
+          },
+          quote,
+        ),
+        ops: opsData([paymentOp({ amount: '0.1000000' })]),
+      });
+
+      const result = await verify({ quote });
+
+      expect(result.verified).toBe(true);
+    });
+  });
+
+  describe('Horizon fetch timeout', () => {
+    it('aborts a hung Horizon transaction fetch', async () => {
+      const quote = makeQuote(makeRoute());
+      // A fetch that never resolves on its own — only the abort signal ends it.
+      (global as any).fetch = jest.fn((_url: string, init?: { signal?: AbortSignal }) => {
+        return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(new Error('The operation was aborted'));
+          });
+        });
+      });
+
+      const result = await verifyStellarPayment({
+        txHash: TX_HASH,
+        quote,
+        horizonUrl: HORIZON_URL,
+        sorobanRpcUrl: 'https://soroban-testnet.stellar.org',
+        networkPassphrase: 'Test SDF Network ; September 2015',
+        timeoutMs: 20,
+      });
+
+      expect(result.verified).toBe(false);
+      expect(result.failureReason).toContain('aborted');
+    });
+
+    it('does not apply the timeout when Horizon responds promptly', async () => {
+      const quote = makeQuote(makeRoute());
+      (global as any).fetch = mockHorizonFetch({
+        tx: txData({}, quote),
+        ops: opsData([paymentOp({ amount: '0.1000000' })]),
+      });
+
+      const result = await verify({ quote });
+
+      expect(result.verified).toBe(true);
     });
   });
 });

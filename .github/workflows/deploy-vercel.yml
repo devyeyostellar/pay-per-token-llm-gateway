@@ -21,7 +21,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PNPM_VERSION: '9'
+  PNPM_VERSION: '11.24.0'
 
 permissions:
   contents: read
@@ -46,8 +46,12 @@ jobs:
           node-version: ${{ steps.nvm.outputs.NODE_VERSION }}
 
       # The build runs on Vercel's infrastructure using the build command in
-      # apps/dashboard/vercel.json (pnpm install + nx build dashboard), so no
-      # local install is needed here.
+      # apps/dashboard/vercel.json (pnpm install + next build). Note: do NOT
+      # use `nx build dashboard` here — Vercel's Root Directory is
+      # apps/dashboard, and the Nx @nx/next:build executor fails with
+      # "ENOENT: scandir 'apps/dashboard/public'" when invoked from a
+      # subdirectory with a cold cache. Plain `next build` resolves the app
+      # dir from its own cwd and works. So no local install is needed here.
       #
       # One-time Vercel project setup:
       #   1. Import the repo and set the project Root Directory to `apps/dashboard`.

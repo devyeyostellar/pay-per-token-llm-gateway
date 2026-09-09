@@ -1,7 +1,18 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ProxyService } from './proxy.service';
+import { MetricsService } from '../../common/metrics.service';
 import { loadConfig, setConfig } from '@x402/config';
 import type { Response } from 'express';
+
+// Mock DNS so the request-time SSRF re-validation passes for test hostnames
+// (the proxy re-resolves upstream hosts before forwarding; api.example.com
+// would otherwise fail to resolve and every test would be rejected).
+jest.mock('dns/promises', () => ({
+  lookup: jest.fn().mockResolvedValue([{ address: '93.184.216.34', family: 4 }]),
+}));
+
+import { lookup } from 'dns/promises';
+const mockLookup = lookup as jest.Mock;
 
 describe('ProxyService', () => {
   let service: ProxyService;
@@ -17,7 +28,14 @@ describe('ProxyService', () => {
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [ProxyService],
+      providers: [
+        ProxyService,
+        // ProxyService optionally injects REDIS (circuit breaker falls back
+        // to the in-memory implementation when null — which is what these
+        // tests exercise).
+        { provide: 'REDIS', useValue: null },
+        MetricsService,
+      ],
     }).compile();
 
     service = module.get<ProxyService>(ProxyService);
@@ -227,6 +245,7 @@ describe('ProxyService', () => {
           mockRes,
           undefined,
           undefined,
+          undefined,
           (tokens) => {
             doneTokens = tokens;
           },
@@ -265,6 +284,32 @@ describe('ProxyService', () => {
       setConfig({ ...baseConfig, llm: { ...baseConfig.llm, maxRetries: 1 } });
     });
 
+    afterEach(() => {
+      // Restore the default public-IP resolution for the other tests
+      mockLookup.mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
+    });
+
+    it('rejects the request when the upstream hostname resolves to a private IP', async () => {
+      const originalFetch = global.fetch;
+      global.fetch = mockOkFetch();
+
+      // Simulate a DNS rebinding attack: the hostname now resolves to the
+      // cloud metadata endpoint. Use a unique hostname so it isn't served
+      // from the 60s DNS cache populated by earlier tests.
+      const rebindUrl = 'https://rebind.example.com/v1/chat/completions';
+      mockLookup.mockResolvedValue([{ address: '169.254.169.254', family: 4 }]);
+
+      try {
+        await expect(service.forwardRequest(request, rebindUrl)).rejects.toThrow(
+          'does not resolve to a public IP address',
+        );
+        // The request must never reach the upstream
+        expect(global.fetch).not.toHaveBeenCalled();
+      } finally {
+        global.fetch = originalFetch;
+      }
+    });
+
     function mockOkFetch() {
       return jest.fn().mockResolvedValue({
         ok: true,
@@ -283,6 +328,7 @@ describe('ProxyService', () => {
           upstreamUrl,
           'sk-test-key',
           'trace-123',
+          '00-a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3-00f067aa0ba902b7-01',
         );
 
         expect(global.fetch).toHaveBeenCalledWith(
@@ -293,6 +339,10 @@ describe('ProxyService', () => {
               'Content-Type': 'application/json',
               Authorization: 'Bearer sk-test-key',
               'X-Request-Trace-Id': 'trace-123',
+              // W3C trace context is propagated to the upstream so provider
+              // tooling can correlate gateway-side spans.
+              traceparent:
+                '00-a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3-00f067aa0ba902b7-01',
             }),
             body: JSON.stringify(request),
           }),
@@ -470,6 +520,7 @@ describe('ProxyService', () => {
           request,
           upstreamUrl,
           mockRes,
+          undefined,
           undefined,
           undefined,
           onDone,

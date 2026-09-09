@@ -13,7 +13,7 @@ import {
   StellarAddress,
   TxHash,
 } from '@x402/types';
-import { generateId, nowUnix, unitsToStroops } from '@x402/shared';
+import { generateId, nowUnix, unitsToStroops, type RedisLike } from '@x402/shared';
 import { logger } from '@x402/logger';
 
 // ── Quote Generation ─────────────────────────
@@ -25,6 +25,8 @@ export interface QuoteGeneratorOptions {
   network: StellarNetwork;
   quoteExpirySeconds: number;
   usdcIssuer: string;
+  /** Minimum payment amount in stroops — quotes below this are clamped. */
+  minPaymentAmount?: string;
   /** Estimated max tokens for per-token pricing (from request max_tokens) */
   estimatedTokens?: number;
   /** Minimum payment amount (stroops) */
@@ -32,7 +34,7 @@ export interface QuoteGeneratorOptions {
 }
 
 /** Default token estimate when max_tokens is not specified */
-const DEFAULT_TOKEN_ESTIMATE = 4096;
+export const DEFAULT_TOKEN_ESTIMATE = 4096;
 
 /**
  * Generate a payment quote for a given route configuration.
@@ -40,9 +42,13 @@ const DEFAULT_TOKEN_ESTIMATE = 4096;
  * For flat pricing: amount = flatPrice (exact charge per request).
  * For per-token pricing: amount = perTokenPrice × estimatedTokens (deposit).
  *   The actual cost is calculated after the LLM response based on usage.total_tokens.
+ *
+ * Amounts are clamped to {@link QuoteGeneratorOptions.minPaymentAmount} when
+ * provided — a route with zero or near-zero pricing cannot grant free access.
  */
 export function generateQuote(options: QuoteGeneratorOptions): Quote {
-  const expiresAt = nowUnix() + options.quoteExpirySeconds;
+  const issuedAt = nowUnix();
+  const expiresAt = issuedAt + options.quoteExpirySeconds;
   const quoteId = generateId();
   const asset: PaymentAsset = options.route.acceptedAssets[0] || 'USDC';
 
@@ -60,9 +66,13 @@ export function generateQuote(options: QuoteGeneratorOptions): Quote {
     amount = options.route.flatPrice || '0';
   }
 
-  // Enforce minimum payment amount
-  if (options.minPaymentAmount && BigInt(amount) < BigInt(options.minPaymentAmount)) {
-    amount = options.minPaymentAmount;
+  // Enforce minimum payment amount — a route configured with flatPrice=0
+  // (or a degenerate per-token config) must not grant free access.
+  if (options.minPaymentAmount) {
+    const min = BigInt(options.minPaymentAmount);
+    if (BigInt(amount) < min) {
+      amount = min.toString();
+    }
   }
 
   // MEMO_TEXT is limited to 28 bytes. Derive a deterministic short memo from
@@ -80,6 +90,7 @@ export function generateQuote(options: QuoteGeneratorOptions): Quote {
     paymentAddress: options.providerAddress,
     memo,
     network: options.network,
+    issuedAt,
     expiresAt,
     statusUrl: `${options.gatewayBaseUrl}/api/v1/payments/${quoteId}/status`,
     estimatedMaxTokens,
@@ -137,7 +148,23 @@ export interface VerifyPaymentOptions {
   horizonUrl: string;
   sorobanRpcUrl: string;
   networkPassphrase: string;
+  /** Minimum payment amount in stroops. Payments below this are rejected. */
   minPaymentAmount?: string;
+  /**
+   * When false, only direct `payment` operations satisfy a quote; Stellar
+   * `path_payment_*` operations are ignored even if the delivered amount
+   * matches. Intended for mainnet, where accepting path payments widens the
+   * attack surface for exotic-asset tricks and adds nothing over the direct
+   * USDC payment the protocol is designed around. Defaults to true so
+   * existing behavior is preserved when unset.
+   */
+  allowPathPayments?: boolean;
+  /**
+   * Per-request timeout for Horizon fetches (ms). Without one, a hung or
+   * slow Horizon endpoint would hold request handlers open indefinitely.
+   * Defaults to 10_000.
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -155,9 +182,14 @@ export async function verifyStellarPayment(
 
   logger.info('Verifying payment', { txHash, quoteId: quote.id });
 
+  const timeoutMs = options.timeoutMs ?? 10_000;
+
   try {
-    // Fetch transaction from Horizon
-    const response = await fetch(`${horizonUrl}/transactions/${txHash}`);
+    // Fetch transaction from Horizon. A hard timeout is mandatory: the
+    // gateway must never hold a request handler open on a hung Horizon.
+    const response = await fetch(`${horizonUrl}/transactions/${txHash}`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
     if (!response.ok) {
       if (response.status === 404) {
         return {
@@ -198,19 +230,30 @@ export async function verifyStellarPayment(
     }
 
     // Fetch payment operations
-    const opsResponse = await fetch(`${horizonUrl}/transactions/${txHash}/operations`);
+    const opsResponse = await fetch(`${horizonUrl}/transactions/${txHash}/operations`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
     if (!opsResponse.ok) {
       throw new Error(`Horizon operations error: ${opsResponse.status}`);
     }
 
     const opsData = (await opsResponse.json()) as Record<string, any>;
-    const paymentOps =
+    const allPaymentOps =
       (opsData._embedded?.records as any[])?.filter(
         (op: any) =>
           op.type === 'payment' ||
           op.type === 'path_payment_strict_send' ||
           op.type === 'path_payment_strict_receive',
       ) || [];
+
+    // On networks that reject path payments (mainnet), only direct `payment`
+    // operations can satisfy a quote. Path ops are tracked separately so a
+    // refusal can be reported with a precise reason.
+    const allowPathPayments = options.allowPathPayments !== false;
+    const paymentOps = allowPathPayments
+      ? allPaymentOps
+      : allPaymentOps.filter((op: any) => op.type === 'payment');
+    const pathPaymentOps = allPaymentOps.filter((op: any) => op.type !== 'payment');
 
     // Amount required to satisfy this quote, in stroops — computed once up
     // front. A malformed quote price means nothing can match.
@@ -234,10 +277,13 @@ export async function verifyStellarPayment(
         // Flat: exact amount match (both sides in stroops)
         requiredAmount = BigInt(quote.amount);
       }
-      
-      // Enforce minimum payment amount
-      if (options.minPaymentAmount && requiredAmount < BigInt(options.minPaymentAmount)) {
-        requiredAmount = BigInt(options.minPaymentAmount);
+
+      // Enforce global minimum — a route with flatPrice=0 must not grant
+      // free access even if the quote was generated before the min was
+      // configured (defense in depth).
+      if (options.minPaymentAmount) {
+        const min = BigInt(options.minPaymentAmount);
+        if (requiredAmount < min) requiredAmount = min;
       }
     } catch {
       // Malformed quote price → nothing can match
@@ -291,6 +337,34 @@ export async function verifyStellarPayment(
     });
 
     if (!matchingPayment) {
+      // When path payments are disabled, a path op that reached the provider
+      // in the right asset is a policy refusal, not a "no match" — say so
+      // explicitly instead of a generic message.
+      if (!allowPathPayments && !sawProviderOp) {
+        const pathOpReachedProvider =
+          !allowPathPayments &&
+          pathPaymentOps.some((op: any) => {
+            const assetMatches =
+              quote.asset === 'XLM'
+                ? op.asset_type === 'native'
+                : op.asset_code === quote.asset && op.asset_issuer === quote.assetIssuer;
+            return assetMatches && op.to === quote.paymentAddress;
+          });
+        if (pathOpReachedProvider) {
+          return {
+            verified: false,
+            txHash,
+            payerAddress: txData.source_account || '',
+            amount: '0',
+            asset: quote.asset,
+            ledger: txData.ledger || 0,
+            timestamp: Date.parse(txData.created_at) / 1000 || 0,
+            failureReason:
+              'Path payments are not accepted on this network. Direct USDC payments only.',
+          };
+        }
+      }
+
       // A payment reached the provider in the right asset but didn't cover
       // the quoted per-token deposit → tell the caller what's missing
       // instead of a generic "no match".
@@ -311,9 +385,34 @@ export async function verifyStellarPayment(
       };
     }
 
-    // Verify quote hasn't expired
+    // Verify the payment falls inside the quote's validity window.
+    //
+    // Both bounds matter:
+    //  - `txTime > expiresAt`: a payment made after the quote expired is
+    //    rejected (the quote window is a security boundary).
+    //  - `txTime < issuedAt`: a payment made BEFORE the quote was issued
+    //    must also be rejected. Without this lower bound, any historical
+    //    payment to the provider's address (public on Horizon, amount
+    //    visible) could be presented against a freshly issued quote for
+    //    one free access — the DB/Redis single-use guards only prevent
+    //    re-using the same hash, not first-time use of an old one. The
+    //    `issuedAt` guard is skipped defensively when the quote predates
+    //    this hardening (no `issuedAt` field stored) so in-flight quotes
+    //    keep working.
     const txTime = Date.parse(txData.created_at) / 1000;
     const amountStroops = unitsToStroops(matchingPayment.amount);
+    if (quote.issuedAt && txTime < quote.issuedAt) {
+      return {
+        verified: false,
+        txHash,
+        payerAddress: matchingPayment.from || txData.source_account,
+        amount: amountStroops,
+        asset: quote.asset,
+        ledger: txData.ledger || 0,
+        timestamp: txTime,
+        failureReason: 'Payment was made before the quote was issued',
+      };
+    }
     if (txTime > quote.expiresAt) {
       return {
         verified: false,
@@ -379,14 +478,8 @@ export function generateReceipt(verification: PaymentVerification, quote: Quote)
 
 // ── Replay Protection ────────────────────────
 
-/**
- * Minimal interface for Redis operations needed by ReplayProtection.
- * ioredis satisfies this interface natively.
- */
-export interface RedisLike {
-  exists(key: string): Promise<number>;
-  set(key: string, value: string, ...args: string[]): Promise<string | null>;
-}
+// Re-export RedisLike from @x402/shared for backward compatibility.
+export type { RedisLike } from '@x402/shared';
 
 /**
  * Replay protection backed by Redis (when available) with in-memory fallback.

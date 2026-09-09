@@ -9,7 +9,9 @@ import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { WebhooksModule } from './modules/webhooks/webhooks.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { PayoutsModule } from './modules/payouts/payouts.module';
 import { HealthController } from './common/health.controller';
+import { MetricsModule } from './common/metrics.module';
 import { PrismaModule } from './common/prisma.module';
 import { RedisModule } from './common/redis.module';
 
@@ -18,6 +20,7 @@ import { RedisModule } from './common/redis.module';
     ScheduleModule.forRoot(),
     PrismaModule,
     RedisModule,
+    MetricsModule,
     X402Module,
     ProxyModule,
     ProvidersModule,
@@ -27,6 +30,7 @@ import { RedisModule } from './common/redis.module';
     WebhooksModule,
     AdminModule,
     AuthModule,
+    PayoutsModule,
   ],
   controllers: [HealthController],
 })

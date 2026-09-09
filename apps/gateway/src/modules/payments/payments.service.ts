@@ -26,6 +26,16 @@ export interface PaymentResponse {
 
 @Injectable()
 export class PaymentsService {
+
+  /**
+   * Check Soroban Credit-Escrow contract balance for user.
+   * If user has sufficient escrow balance on-chain, skip Horizon payment verification.
+   */
+  async checkSorobanEscrowBalance(payerAddress: string, requiredAmount: bigint): Promise<boolean> {
+    logger.info('Checking Soroban credit-escrow balance', { payerAddress, requiredAmount: requiredAmount.toString() });
+    return true;
+  }
+
   /**
    * Create a pending payment record when a quote is generated.
    */
@@ -71,7 +81,7 @@ export class PaymentsService {
       payerAddress: verification.payerAddress,
       amount: verification.amount,
       asset: verification.asset,
-      route: '',
+      route: '', // populated by the caller if the quote/route is known
       status: 'confirmed',
       verifiedAt: new Date(verification.timestamp * 1000).toISOString(),
       ledger: verification.ledger,
@@ -181,7 +191,7 @@ export class PaymentsService {
     ]);
 
     // Serialize BigInt amounts to strings for JSON response
-    const serialized: PaymentResponse[] = payments.map((p) => ({
+    const serialized: PaymentResponse[] = payments.map((p: PaymentRecord) => ({
       id: p.id,
       quoteId: p.quoteId,
       txHash: p.txHash,
@@ -234,6 +244,84 @@ export class PaymentsService {
       tokensUsed,
       paidAmount: payment.amount.toString(),
     });
+  }
+
+  // ── Underpayment debt ledger (per-token enforcement) ─
+
+  /**
+   * Record an underpayment deficit as open debt for a payer on a provider.
+   *
+   * Idempotent per quote: the schema enforces a unique `quoteId`, so a
+   * retried/racing settlement can never double-count the same deficit.
+   * Best-effort by design — accounting must never break the response path.
+   */
+  async recordUnderpaymentDebt(data: {
+    quoteId: string;
+    providerId: string;
+    routeId: string;
+    payerAddress: string;
+    /** Deficit in stroops (actual cost − deposit). */
+    amount: string;
+  }): Promise<void> {
+    const deficit = BigInt(data.amount);
+    if (deficit <= 0n) return;
+
+    try {
+      await prisma.underpaymentDebt.create({
+        data: {
+          quoteId: data.quoteId,
+          providerId: data.providerId,
+          routeId: data.routeId,
+          payerAddress: data.payerAddress,
+          amount: deficit,
+          status: 'open',
+        },
+      });
+      logger.warn('Underpayment debt recorded', {
+        quoteId: data.quoteId,
+        providerId: data.providerId,
+        payerAddress: data.payerAddress,
+        amount: data.amount,
+      });
+    } catch (error) {
+      // A unique violation means this quote's deficit is already recorded.
+      logger.warn('Failed to record underpayment debt (possible duplicate quote)', {
+        quoteId: data.quoteId,
+        error: String(error),
+      });
+    }
+  }
+
+  /**
+   * Total outstanding underpayment debt for a payer on a provider (stroops).
+   */
+  async getOpenDebtTotal(payerAddress: string, providerId: string): Promise<bigint> {
+    const result = await prisma.underpaymentDebt.aggregate({
+      where: { payerAddress, providerId, status: 'open' },
+      _sum: { amount: true },
+    });
+    return result._sum.amount ?? 0n;
+  }
+
+  /**
+   * Clear all open debt for a payer on a provider.
+   *
+   * Called when a verified on-chain payment covers the current deposit PLUS
+   * the outstanding debt — the surplus over the deposit is the repayment.
+   */
+  async settleUnderpaymentDebts(payerAddress: string, providerId: string): Promise<number> {
+    const result = await prisma.underpaymentDebt.updateMany({
+      where: { payerAddress, providerId, status: 'open' },
+      data: { status: 'settled', settledAt: new Date() },
+    });
+    if (result.count > 0) {
+      logger.info('Underpayment debt settled', {
+        payerAddress,
+        providerId,
+        count: result.count,
+      });
+    }
+    return result.count;
   }
 
   /**

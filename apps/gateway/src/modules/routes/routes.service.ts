@@ -1,6 +1,7 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { prisma } from '@x402/database';
 import { logger } from '@x402/logger';
+import { validateUpstreamUrl } from '../webhooks/webhooks.service';
 import type { RouteConfig, PricingModel, PaymentAsset } from '@x402/types';
 
 /**
@@ -148,11 +149,20 @@ export class RoutesService {
       throw new NotFoundException(`Provider ${data.providerId} not found`);
     }
 
+    // SSRF guard: validate the upstream URL before persisting so the proxy
+    // can never be used to reach internal infrastructure.
+    let validatedUpstreamUrl: string;
+    try {
+      validatedUpstreamUrl = await validateUpstreamUrl(data.upstreamUrl);
+    } catch (error) {
+      throw new BadRequestException((error as Error).message);
+    }
+
     const r = await prisma.route.create({
       data: {
         providerId: data.providerId,
         path: data.path,
-        upstreamUrl: data.upstreamUrl,
+        upstreamUrl: validatedUpstreamUrl,
         model: data.model,
         pricingModel: data.pricingModel,
         flatPrice: data.flatPrice,
@@ -185,6 +195,15 @@ export class RoutesService {
       where: { id, provider: { walletAddress: ownerAddress } },
     });
     if (!existing) throw new NotFoundException(`Route ${id} not found`);
+
+    // SSRF guard: re-validate the upstream URL if it's being changed.
+    if (data.upstreamUrl !== undefined) {
+      try {
+        data.upstreamUrl = await validateUpstreamUrl(data.upstreamUrl);
+      } catch (error) {
+        throw new BadRequestException((error as Error).message);
+      }
+    }
 
     const r = await prisma.route.update({ where: { id }, data });
     return toRouteConfig(r);

@@ -8,22 +8,13 @@
 // This follows the same Redis + fallback pattern as ReplayProtection
 // in @x402/x402-core.
 
-import { generateId } from '@x402/shared';
+import { generateId, type RedisLike } from '@x402/shared';
 import { verifyChallenge } from '@x402/wallet';
 import { logger } from '@x402/logger';
 import type { StellarAddress } from '@x402/types';
 
-// ── Redis Interface ──────────────────────────
-
-/**
- * Minimal interface for Redis operations needed by AuthStore.
- * ioredis satisfies this interface natively.
- */
-export interface AuthRedisLike {
-  get(key: string): Promise<string | null>;
-  set(key: string, value: string, ...args: string[]): Promise<string | null>;
-  del(...keys: string[]): Promise<number>;
-}
+// Re-export the shared RedisLike as AuthRedisLike for backward compatibility.
+export type { RedisLike as AuthRedisLike } from '@x402/shared';
 
 // ── Session Type ─────────────────────────────
 
@@ -55,7 +46,7 @@ interface ChallengeRecord {
  * (useful for development and testing).
  */
 export class AuthStore {
-  private readonly redis: AuthRedisLike | null;
+  private readonly redis: RedisLike | null;
 
   // In-memory fallback stores
   private readonly challenges = new Map<string, ChallengeRecord>();
@@ -65,7 +56,7 @@ export class AuthStore {
   private static readonly SESSION_PREFIX = 'x402:auth:session:';
   private static readonly CHALLENGE_TTL = 300; // 5 minutes
 
-  constructor(redis?: AuthRedisLike) {
+  constructor(redis?: RedisLike) {
     this.redis = redis ?? null;
   }
 

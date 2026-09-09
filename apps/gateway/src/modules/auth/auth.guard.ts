@@ -8,18 +8,25 @@ export class AuthGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<Request>();
+
+    // Primary: httpOnly cookie (XSS-resistant, set by /auth/verify).
+    // Fallback: Authorization header (backward compat for pre-cookie clients).
+    const cookieToken = request.cookies?.['x402-session'];
     const authHeader = request.headers['authorization'];
 
-    if (!authHeader) {
-      throw new UnauthorizedException('Missing authorization header');
+    let token: string;
+    if (cookieToken) {
+      token = cookieToken;
+    } else if (authHeader) {
+      const parts = authHeader.split(' ');
+      if (parts.length !== 2 || parts[0] !== 'Bearer') {
+        throw new UnauthorizedException('Invalid authorization format. Use: Bearer <token>');
+      }
+      token = parts[1];
+    } else {
+      throw new UnauthorizedException('Missing session token');
     }
 
-    const parts = authHeader.split(' ');
-    if (parts.length !== 2 || parts[0] !== 'Bearer') {
-      throw new UnauthorizedException('Invalid authorization format. Use: Bearer <token>');
-    }
-
-    const token = parts[1];
     const result = await this.authService.validateToken(token);
 
     if (!result.valid) {

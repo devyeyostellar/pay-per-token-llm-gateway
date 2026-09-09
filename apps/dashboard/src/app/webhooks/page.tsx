@@ -1,15 +1,6 @@
 'use client';
 
-import {
-  Webhook,
-  Plus,
-  Globe,
-  Loader2,
-  AlertTriangle,
-  RefreshCw,
-  Send,
-  CheckCircle,
-} from 'lucide-react';
+import { Plus, Globe, Loader2, AlertTriangle, Send, CheckCircle } from 'lucide-react';
 import { useState } from 'react';
 import { sendWebhookTest } from '@/lib/api';
 

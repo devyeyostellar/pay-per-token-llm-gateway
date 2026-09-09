@@ -35,6 +35,9 @@ export const quoteSchema = z.object({
   assetIssuer: z.string().optional(),
   paymentAddress: stellarAddressSchema,
   memo: z.string().optional(),
+  // Optional for backward compatibility with quotes stored before the
+  // issuedAt hardening (gateway-generated quotes always set it).
+  issuedAt: z.number().positive().optional(),
   expiresAt: z.number().positive(),
   network: stellarNetworkSchema,
   statusUrl: z.string().url(),
@@ -53,18 +56,27 @@ export const paymentVerificationSchema = z.object({
 
 // ── Chat Completion ──────────────────────────
 
+// Bounds that keep a single request from exhausting gateway memory or CPU
+// before it even reaches the upstream LLM (the HTTP body limit of 1 MB is a
+// coarse outer bound; these give callers a precise error and stop pathological
+// payloads earlier). 128 messages × 64 KiB content each is far beyond any
+// legitimate chat payload while staying well under the 1 MB body limit.
+export const MAX_MESSAGES = 128;
+export const MAX_MESSAGE_CONTENT_LENGTH = 65_536;
+export const MAX_MAX_TOKENS = 1_000_000;
+
 export const chatMessageSchema = z.object({
   role: z.enum(['system', 'user', 'assistant', 'function']),
-  content: z.string(),
+  content: z.string().max(MAX_MESSAGE_CONTENT_LENGTH),
   name: z.string().optional(),
 });
 
 export const chatCompletionRequestSchema = z
   .object({
     model: z.string().min(1),
-    messages: z.array(chatMessageSchema).min(1),
+    messages: z.array(chatMessageSchema).min(1).max(MAX_MESSAGES),
     temperature: z.number().min(0).max(2).optional(),
-    max_tokens: z.number().int().positive().optional(),
+    max_tokens: z.number().int().positive().max(MAX_MAX_TOKENS).optional(),
     top_p: z.number().min(0).max(1).optional(),
     frequency_penalty: z.number().min(-2).max(2).optional(),
     presence_penalty: z.number().min(-2).max(2).optional(),

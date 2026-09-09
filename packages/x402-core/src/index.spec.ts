@@ -52,6 +52,24 @@ describe('generateQuote', () => {
     expect(quote.statusUrl).toContain('/api/v1/payments/');
   });
 
+  it('sets issuedAt and derives expiresAt from the quote window', () => {
+    const route = makeRoute();
+    const quote = generateQuote({
+      route,
+      providerAddress: 'GA5ZSE6VKPVFLEXMWJQBGHE4FJHKQIFSJMLQ7H4VFQB4UHLEH5IOVK3F',
+      gatewayBaseUrl: 'http://localhost:3000',
+      network: 'testnet',
+      quoteExpirySeconds: 300,
+      usdcIssuer: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
+    });
+
+    // The quote window integrity check in verifyStellarPayment depends on
+    // issuedAt being the moment of issuance and expiresAt = issuedAt + window.
+    expect(quote.issuedAt).toBeDefined();
+    expect(quote.issuedAt).toBeLessThanOrEqual(Date.now() / 1000);
+    expect(quote.expiresAt - quote.issuedAt).toBe(300);
+  });
+
   it('derives a short deterministic memo from the quote id (attribution)', () => {
     const route = makeRoute();
     const quote = generateQuote({
@@ -248,8 +266,10 @@ describe('ReplayProtection', () => {
 
   it('uses Redis when client is provided', async () => {
     const mockRedis: RedisLike = {
-      exists: jest.fn(),
+      get: jest.fn(),
       set: jest.fn(),
+      del: jest.fn(),
+      exists: jest.fn(),
     };
 
     const txHash = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2';
@@ -271,8 +291,10 @@ describe('ReplayProtection', () => {
 
   it('atomically claims a hash exactly once via Redis SET NX', async () => {
     const mockRedis: RedisLike = {
-      exists: jest.fn(),
+      get: jest.fn(),
       set: jest.fn().mockResolvedValue('OK'),
+      del: jest.fn(),
+      exists: jest.fn(),
     };
 
     const txHash = 'c1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2';

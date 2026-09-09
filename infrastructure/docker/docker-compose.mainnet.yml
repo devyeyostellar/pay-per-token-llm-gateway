@@ -1,0 +1,121 @@
+# ──────────────────────────────────────────────────────────────
+# Production Docker Compose for the Stellar MAINNET gateway.
+#
+# Usage:
+#   docker compose -f infrastructure/docker/docker-compose.mainnet.yml up -d
+#
+# Unlike the dev compose file, this one FAILS FAST when secrets are
+# missing (${VAR:?error}): mainnet moves real USDC, so a misconfigured
+# deploy must never silently start with weak defaults.
+#
+# Required environment variables (set them in a .env file next to this
+# compose file, or export them in your shell):
+#   POSTGRES_PASSWORD   Strong Postgres password (e.g. openssl rand -base64 32)
+#   REDIS_PASSWORD      Strong Redis password (e.g. openssl rand -base64 32)
+#   JWT_SECRET          Generate with: openssl rand -base64 32
+#   CONTRACT_ADMIN_SECRET  Secret key (S...) of the contract admin account
+#                          that records on-chain payments
+#   PAYMENT_VERIFIER_CONTRACT  Mainnet payment-verifier contract ID
+#   CREDIT_ESCROW_CONTRACT     Mainnet credit-escrow contract ID
+#   MULTISIG_CONTRACT          Mainnet multisig contract ID
+#
+# Optional environment variables:
+#   STELLAR_NETWORK     (default: mainnet)
+#   USDC_ISSUER         (default: Circle mainnet USDC issuer GA5ZSE...KZVN)
+#   CORS_ORIGINS        (default: https://x402-dashboard.vercel.app)
+#   TRUST_PROXY         (default: 1; set to the actual proxy chain when
+#                       running behind Cloudflare/NGINX/Railway)
+#
+# Contract deployment instructions:
+#   STELLAR_NETWORK=mainnet STELLAR_SECRET_KEY=S... \
+#     USDC_ISSUER=GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN \
+#     bash scripts/deploy-contracts.sh
+# ──────────────────────────────────────────────────────────────
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: x402_gateway
+      POSTGRES_USER: x402
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — set it in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U x402 -d x402_gateway']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ['sh', '-c', 'redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"']
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required — set it in .env}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'redis-cli -a "$$REDIS_PASSWORD" ping | grep -q PONG']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: ../../
+      dockerfile: infrastructure/docker/Dockerfile.gateway
+    ports:
+      - '3000:3000'
+    environment:
+      NODE_ENV: production
+      PORT: '3000'
+      HOST: '0.0.0.0'
+      DATABASE_URL: postgresql://x402:${POSTGRES_PASSWORD}@postgres:5432/x402_gateway
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      STELLAR_NETWORK: mainnet
+      USDC_ISSUER: ${USDC_ISSUER:-GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN}
+      # Fail fast: docker compose refuses to start without real secrets.
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required — set it in .env (openssl rand -base64 32)}
+      CONTRACT_ADMIN_SECRET: ${CONTRACT_ADMIN_SECRET:?CONTRACT_ADMIN_SECRET is required — secret key (S...) of the contract admin}
+      PAYMENT_VERIFIER_CONTRACT: ${PAYMENT_VERIFIER_CONTRACT:?PAYMENT_VERIFIER_CONTRACT is required — mainnet contract ID}
+      CREDIT_ESCROW_CONTRACT: ${CREDIT_ESCROW_CONTRACT:?CREDIT_ESCROW_CONTRACT is required — mainnet contract ID}
+      MULTISIG_CONTRACT: ${MULTISIG_CONTRACT:?MULTISIG_CONTRACT is required — mainnet contract ID}
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://x402-dashboard.vercel.app}
+      TRUST_PROXY: ${TRUST_PROXY:-1}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', 'http://localhost:3000/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: ../../
+      dockerfile: infrastructure/docker/Dockerfile.dashboard
+    ports:
+      - '3001:3001'
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_GATEWAY_URL: http://gateway:3000
+    depends_on:
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', 'http://localhost:3001']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:

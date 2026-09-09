@@ -3,7 +3,7 @@
 // ──────────────────────────────────────────────
 
 import type { StellarNetwork, PaymentAsset } from '@x402/types';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { resolve } from 'path';
 import { config as loadDotEnv } from 'dotenv';
 
@@ -20,6 +20,33 @@ const envFilePath = resolve(process.cwd(), '.env');
 if (existsSync(envFilePath)) {
   loadDotEnv({ path: envFilePath });
 }
+
+// Load contract address defaults from the project's deployed-addresses.json
+// (maintained by `scripts/deploy-contracts.sh` and CI). The JSON file is the
+// single source of truth for contract IDs — env var overrides take precedence,
+// and hardcoded fallback IDs are the last resort when the file is missing.
+interface DeployedAddressesFile {
+  [network: string]: {
+    paymentVerifier?: string;
+    creditEscrow?: string;
+    multisig?: string;
+  };
+}
+
+function loadDeployedAddresses(): DeployedAddressesFile {
+  const addressesPath = resolve(process.cwd(), 'contracts', 'deployed-addresses.json');
+  try {
+    if (existsSync(addressesPath)) {
+      const raw = readFileSync(addressesPath, 'utf-8');
+      return JSON.parse(raw) as DeployedAddressesFile;
+    }
+  } catch {
+    // File is missing or malformed — fall back to hardcoded defaults.
+  }
+  return {};
+}
+
+const deployedAddresses = loadDeployedAddresses();
 
 export interface ContractAddresses {
   /** Payment verifier contract ID */
@@ -54,6 +81,10 @@ export interface GatewayConfig {
     sorobanRpcUrl: string;
     /** Network passphrase */
     networkPassphrase: string;
+    /** Per-request Horizon timeout (ms) */
+    horizonTimeoutMs: number;
+    /** Per-request Soroban RPC timeout (ms) */
+    sorobanRpcTimeoutMs: number;
   };
 
   /** Database */
@@ -85,6 +116,21 @@ export interface GatewayConfig {
     /** Secret key of the contract admin (for on-chain payment recording).
      * Optional — if not set, on-chain recording is skipped. */
     contractAdminSecret?: string;
+    /**
+     * Opt-in per-token on-chain settlement via the credit-escrow contract:
+     * after each metered LLM response the gateway charges the actual cost from
+     * the caller's escrow balance and auto-refunds any surplus. Requires
+     * `CONTRACT_ADMIN_SECRET` and an escrow contract funded by deposits.
+     */
+    escrowSettlementEnabled: boolean;
+    /**
+     * Opt-in provider payout automation via the multisig Soroban contract:
+     * the admin can propose payouts of confirmed provider revenue through the
+     * multisig wallet (M-of-N signer approval). Requires `CONTRACT_ADMIN_SECRET`
+     * and a deployed multisig contract. When disabled the payout endpoints are
+     * non-functional and no contract calls are made.
+     */
+    payoutAutomationEnabled: boolean;
   };
 
   /** Deployed Soroban contract addresses */
@@ -102,12 +148,6 @@ export interface GatewayConfig {
 
   /** Notification configuration */
   notifications: {
-    email: {
-      enabled: boolean;
-      smtpHost?: string;
-      smtpPort?: number;
-      fromAddress?: string;
-    };
     webhook: {
       enabled: boolean;
       retryCount: number;
@@ -148,7 +188,143 @@ const INSECURE_JWT_SECRETS = [
   'change-me-to-a-random-64-byte-hex-string',
   'change-me-in-production',
   'dev-secret-change-in-production',
+  'change-this-to-a-random-secret-in-production',
 ];
+
+/**
+ * Throw when the dev auth bypass would be active in production.
+ *
+ * AUTH_DEV_MODE accepts `dev-sig-` signatures that authenticate as ANY
+ * wallet. If it were left on in a production deploy, anyone who learned the
+ * convention could impersonate any provider wallet. Same fail-fast rationale
+ * as the JWT placeholder check — refuse to boot rather than run with the
+ * bypass enabled.
+ */
+function assertNoDevAuthInProduction(nodeEnv: string): void {
+  if (nodeEnv === 'production' && process.env.AUTH_DEV_MODE === 'true') {
+    throw new Error(
+      'AUTH_DEV_MODE=true is set but NODE_ENV=production. ' +
+        'AUTH_DEV_MODE accepts dev-sig- signatures as any wallet and must never ' +
+        'run in production. Set AUTH_DEV_MODE=false.',
+    );
+  }
+}
+
+interface StellarDefaults {
+  horizon: string;
+  rpc: string;
+  passphrase: string;
+  usdcIssuer: string;
+}
+
+/**
+ * Well-known per-network Stellar defaults.
+ */
+const STELLAR_NETWORK_DEFAULTS: Record<StellarNetwork, StellarDefaults> = {
+  testnet: {
+    horizon: 'https://horizon-testnet.stellar.org',
+    rpc: 'https://soroban-testnet.stellar.org',
+    passphrase: 'Test SDF Network ; September 2015',
+    usdcIssuer: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
+  },
+  mainnet: {
+    horizon: 'https://horizon.stellar.org',
+    rpc: 'https://soroban-mainnet.stellar.org',
+    passphrase: 'Public Global Stellar Network ; September 2015',
+    usdcIssuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+  },
+  futurenet: {
+    horizon: 'https://horizon-futurenet.stellar.org',
+    rpc: 'https://rpc-futurenet.stellar.org',
+    passphrase: 'Test SDF Future Network ; October 2022',
+    usdcIssuer: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
+  },
+};
+
+/**
+ * Host/URL fragments that identify a test or future network endpoint. A
+ * mainnet gateway must never be pointed at these: it would verify worthless
+ * testnet payments and serve real LLM compute for them. (Protocol-level
+ * replay is already impossible — Stellar signatures are passphrase-scoped —
+ * so operator config drift is the only realistic cross-network hazard.)
+ */
+const TEST_NETWORK_URL_MARKERS = ['testnet', 'futurenet'] as const;
+
+/**
+ * True when `url` looks like a test/future network endpoint (either by
+ * hostname marker or by matching a known SDF test endpoint exactly).
+ * Custom mainnet providers are allowed through.
+ */
+function isTestNetworkUrl(url: string): boolean {
+  const lower = url.toLowerCase();
+  if (TEST_NETWORK_URL_MARKERS.some((m) => lower.includes(m))) return true;
+  return (
+    lower === 'https://horizon-testnet.stellar.org' ||
+    lower === 'https://soroban-testnet.stellar.org' ||
+    lower === 'https://rpc-futurenet.stellar.org' ||
+    lower === 'https://horizon-futurenet.stellar.org'
+  );
+}
+
+/**
+ * Verify that a `STELLAR_NETWORK=mainnet` configuration points at mainnet
+ * infrastructure. A "mainnet" gateway whose Horizon/RPC URLs, passphrase, or
+ * USDC issuer actually belong to testnet would verify worthless testnet
+ * payments and serve real LLM compute for them — the realistic mainnet
+ * cross-network hazard (protocol-level replay is impossible because Stellar
+ * signatures are passphrase-scoped).
+ *
+ * Hard failures on mainnet: Horizon/RPC pointing at a test/future endpoint,
+ * a non-mainnet passphrase override, and any USDC issuer other than Circle's
+ * (accepting a different issuer would let callers pay with counterfeit
+ * tokens). A provider-specific mainnet Horizon/RPC override is silently
+ * allowed (custom mainnet infrastructure is legitimate); the well-known
+ * defaults are used when unset.
+ *
+ * Futurenet is treated as a test network: the guard only enforces
+ * consistency for mainnet.
+ */
+function assertMainnetNetworkConsistency(): void {
+  const network = (process.env.STELLAR_NETWORK as StellarNetwork) || 'testnet';
+  if (network !== 'mainnet') return;
+
+  const horizonUrl = process.env.HORIZON_URL || '';
+  if (horizonUrl && isTestNetworkUrl(horizonUrl)) {
+    throw new Error(
+      `HORIZON_URL is set to '${horizonUrl}' but STELLAR_NETWORK=mainnet. ` +
+        'Horizon must point at the mainnet network, not a test/future network. ' +
+        `The well-known mainnet endpoint is ${STELLAR_NETWORK_DEFAULTS.mainnet.horizon}.`,
+    );
+  }
+
+  const sorobanRpcUrl = process.env.SOROBAN_RPC_URL || '';
+  if (sorobanRpcUrl && isTestNetworkUrl(sorobanRpcUrl)) {
+    throw new Error(
+      `SOROBAN_RPC_URL is set to '${sorobanRpcUrl}' but STELLAR_NETWORK=mainnet. ` +
+        'The Soroban RPC must point at the mainnet network, not a test/future network. ' +
+        `The well-known mainnet RPC is ${STELLAR_NETWORK_DEFAULTS.mainnet.rpc}.`,
+    );
+  }
+
+  const passphrase = process.env.NETWORK_PASSPHRASE || '';
+  if (passphrase && passphrase !== STELLAR_NETWORK_DEFAULTS.mainnet.passphrase) {
+    throw new Error(
+      `NETWORK_PASSPHRASE is set to '${passphrase}' but STELLAR_NETWORK=mainnet. ` +
+        `The mainnet passphrase is '${STELLAR_NETWORK_DEFAULTS.mainnet.passphrase}'; ` +
+        'do not override it. A wrong passphrase would accept transactions ' +
+        'signed for a different network.',
+    );
+  }
+
+  const usdcIssuer = process.env.USDC_ISSUER || STELLAR_NETWORK_DEFAULTS.mainnet.usdcIssuer;
+  if (usdcIssuer !== STELLAR_NETWORK_DEFAULTS.mainnet.usdcIssuer) {
+    throw new Error(
+      `USDC_ISSUER is set to '${usdcIssuer}' but STELLAR_NETWORK=mainnet. ` +
+        `The mainnet USDC issuer (Circle) is ${STELLAR_NETWORK_DEFAULTS.mainnet.usdcIssuer}. ` +
+        'Accepting a different issuer on mainnet would let callers pay with counterfeit tokens.',
+    );
+  }
+}
 
 /**
  * Validate that required environment variables are set.
@@ -183,10 +359,41 @@ export function validateEnv(): void {
     );
   }
 
+  // Never boot a production gateway with the dev auth bypass enabled.
+  assertNoDevAuthInProduction(process.env.NODE_ENV || 'development');
+
+  // A mainnet gateway must not point at test/future chain endpoints, a
+  // foreign passphrase, or a non-Circle USDC issuer.
+  assertMainnetNetworkConsistency();
+
   const missing = required.filter((r) => !r.value);
   if (missing.length > 0) {
     const messages = missing.map((r) => `  • ${r.message}`).join('\n');
     throw new Error(`Missing required environment variables:\n${messages}`);
+  }
+
+  // Redis is mandatory in production. The default dev URL (localhost:6379)
+  // and the Railway auto-provision template (${{Redis.REDIS_URL}}) are
+  // rejected — the operator must set a real URL. The ioredis constructor
+  // in RedisModule will also fail at startup if the server is unreachable.
+  const isProduction = process.env.NODE_ENV === 'production';
+  if (isProduction && process.env.REDIS_URL) {
+    const redisUrl = process.env.REDIS_URL;
+    // Reject unexpanded Railway template references (they contain "{{")
+    if (redisUrl.includes('{{')) {
+      throw new Error(
+        'REDIS_URL contains an unexpanded template reference. ' +
+          'Ensure Railway database references are resolved before deploying.',
+      );
+    }
+    // Reject the development default
+    if (redisUrl === 'redis://localhost:6379' || redisUrl === 'redis://127.0.0.1:6379') {
+      throw new Error(
+        'REDIS_URL is set to the development default (localhost:6379). ' +
+          'In production, you must configure a real Redis server. ' +
+          'Set REDIS_URL to your production Redis connection string.',
+      );
+    }
   }
 }
 
@@ -197,26 +404,9 @@ export function loadConfig(): GatewayConfig {
   const nodeEnv = (process.env.NODE_ENV as GatewayConfig['nodeEnv']) || 'development';
   const network = (process.env.STELLAR_NETWORK as StellarNetwork) || 'testnet';
 
-  const networkConfigs: Record<
-    StellarNetwork,
-    { horizon: string; rpc: string; passphrase: string }
-  > = {
-    testnet: {
-      horizon: 'https://horizon-testnet.stellar.org',
-      rpc: 'https://soroban-testnet.stellar.org',
-      passphrase: 'Test SDF Network ; September 2015',
-    },
-    mainnet: {
-      horizon: 'https://horizon.stellar.org',
-      rpc: 'https://soroban-mainnet.stellar.org',
-      passphrase: 'Public Global Stellar Network ; September 2015',
-    },
-    futurenet: {
-      horizon: 'https://horizon-futurenet.stellar.org',
-      rpc: 'https://rpc-futurenet.stellar.org',
-      passphrase: 'Test SDF Future Network ; October 2022',
-    },
-  };
+  // Shared per-network defaults (also used by the mainnet-consistency guard
+  // and by validateEnv).
+  const networkConfigs = STELLAR_NETWORK_DEFAULTS;
 
   // JWT_SECRET is required in every non-test environment (fail fast so a
   // misconfigured deploy can never silently run with a known default secret).
@@ -234,6 +424,15 @@ export function loadConfig(): GatewayConfig {
     }
   }
 
+  // Same guard as validateEnv — getConfig()/loadConfig() must also fail fast
+  // if the dev auth bypass would be active in production.
+  assertNoDevAuthInProduction(nodeEnv);
+
+  // Refuse to boot a mainnet gateway whose chain configuration actually
+  // points at a test/future network, a foreign passphrase, or a non-Circle
+  // USDC issuer.
+  assertMainnetNetworkConsistency();
+
   return {
     port: parseInt(process.env.PORT || '3000', 10),
     host: process.env.HOST || '0.0.0.0',
@@ -245,6 +444,8 @@ export function loadConfig(): GatewayConfig {
       horizonUrl: process.env.HORIZON_URL || networkConfigs[network].horizon,
       sorobanRpcUrl: process.env.SOROBAN_RPC_URL || networkConfigs[network].rpc,
       networkPassphrase: networkConfigs[network].passphrase,
+      horizonTimeoutMs: parseInt(process.env.HORIZON_TIMEOUT_MS || '10000', 10),
+      sorobanRpcTimeoutMs: parseInt(process.env.SOROBAN_RPC_TIMEOUT_MS || '10000', 10),
     },
 
     database: {
@@ -260,11 +461,15 @@ export function loadConfig(): GatewayConfig {
 
     payment: {
       defaultAsset: 'USDC',
-      usdcIssuer:
-        process.env.USDC_ISSUER || 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
+      // Network-aware default: resolves to Circle's official USDC issuer for
+      // the selected STELLAR_NETWORK (mainnet → GA5ZSE...KZVN, testnet/
+      // futurenet → GBBD47...FLA5). An explicit USDC_ISSUER always wins.
+      usdcIssuer: process.env.USDC_ISSUER || networkConfigs[network].usdcIssuer,
       quoteExpirySeconds: parseInt(process.env.QUOTE_EXPIRY_SECONDS || '300', 10),
       minPaymentAmount: process.env.MIN_PAYMENT_AMOUNT || '10000', // 0.00001 XLM in stroops
       contractAdminSecret: process.env.CONTRACT_ADMIN_SECRET || undefined,
+      escrowSettlementEnabled: process.env.ESCROW_SETTLEMENT_ENABLED === 'true',
+      payoutAutomationEnabled: process.env.PAYOUT_AUTOMATION_ENABLED === 'true',
     },
 
     llm: {
@@ -276,12 +481,6 @@ export function loadConfig(): GatewayConfig {
     },
 
     notifications: {
-      email: {
-        enabled: process.env.EMAIL_ENABLED === 'true',
-        smtpHost: process.env.SMTP_HOST,
-        smtpPort: parseInt(process.env.SMTP_PORT || '587', 10),
-        fromAddress: process.env.EMAIL_FROM,
-      },
       webhook: {
         enabled: process.env.WEBHOOK_ENABLED !== 'false',
         retryCount: parseInt(process.env.WEBHOOK_RETRY_COUNT || '3', 10),
@@ -301,12 +500,16 @@ export function loadConfig(): GatewayConfig {
     contracts: {
       paymentVerifier:
         process.env.PAYMENT_VERIFIER_CONTRACT ||
+        deployedAddresses[network]?.paymentVerifier ||
         'CDHGI3A2BXRC5AQDPWEEXUDQMDXTDZYBCLJZWSE5XZKMVEGJ5LLHA4CZ',
       creditEscrow:
         process.env.CREDIT_ESCROW_CONTRACT ||
+        deployedAddresses[network]?.creditEscrow ||
         'CCE7AWVXPO57W5KDONOPMHDV4S5UBUBMHNJVSAVPL7AZGMD4WQN6WVAP',
       multisig:
-        process.env.MULTISIG_CONTRACT || 'CDMBVMMNJVAJVAV3T2TAL2TAACGTKYUS45RXNLCYKYUC3VGHBI66NWAA',
+        process.env.MULTISIG_CONTRACT ||
+        deployedAddresses[network]?.multisig ||
+        'CDMBVMMNJVAJVAV3T2TAL2TAACGTKYUS45RXNLCYKYUC3VGHBI66NWAA',
     },
   };
 }

@@ -32,9 +32,7 @@ export default function ErrorPage({
               {error.message || 'An unexpected error occurred. Please try again.'}
             </p>
             {error.digest && (
-              <p className="text-xs text-muted-foreground font-mono">
-                Error ID: {error.digest}
-              </p>
+              <p className="text-xs text-muted-foreground font-mono">Error ID: {error.digest}</p>
             )}
             <button
               onClick={reset}

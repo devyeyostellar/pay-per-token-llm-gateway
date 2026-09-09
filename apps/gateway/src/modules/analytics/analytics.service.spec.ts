@@ -4,6 +4,7 @@ import { AnalyticsService } from './analytics.service';
 // Mock @x402/database
 jest.mock('@x402/database', () => ({
   prisma: {
+    $queryRaw: jest.fn(),
     analyticsEvent: {
       create: jest.fn(),
       count: jest.fn(),
@@ -243,7 +244,7 @@ describe('AnalyticsService', () => {
       jest.useRealTimers();
     });
 
-    it('builds buckets and aggregates events into them', async () => {
+    it('builds buckets and aggregates events into them via SQL', async () => {
       mockOwnedProviders();
       const now = new Date('2026-08-10T12:00:00.000Z');
       jest.useFakeTimers({ now });
@@ -251,25 +252,40 @@ describe('AnalyticsService', () => {
       const startTime = new Date(now.getTime() - 24 * 60 * 60 * 1000);
       const start = startTime.getTime();
       const hour = 60 * 60 * 1000;
+      const hourSec = 60 * 60;
 
-      (mockPrisma.analyticsEvent.findMany as jest.Mock).mockResolvedValue([
-        { type: 'request:paid', amount: BigInt('1000000'), createdAt: new Date(start + hour) },
-        { type: 'request:paid', amount: null, createdAt: new Date(start + hour) },
-        { type: 'request:unpaid', amount: null, createdAt: new Date(start + 2 * hour) },
-        { type: 'payment:failed', amount: null, createdAt: new Date(start + 3 * hour) },
-        // No matching switch case — ignored
-        { type: 'payment:verified', amount: null, createdAt: new Date(start + 3 * hour) },
-        // Outside the time window — skipped
-        { type: 'request:paid', amount: BigInt('500000'), createdAt: new Date(start - hour) },
-      ]);
+      // Mock $queryRaw to return pre-aggregated bucket rows (simulating the SQL result)
+      const mockBucketRows = [
+        {
+          bucket_epoch: BigInt(Math.floor((start + hour) / 1000 / hourSec) * hourSec),
+          paid_requests: BigInt(2),
+          unpaid_requests: BigInt(0),
+          revenue: BigInt(1000000),
+          failed_verifications: BigInt(0),
+        },
+        {
+          bucket_epoch: BigInt(Math.floor((start + 2 * hour) / 1000 / hourSec) * hourSec),
+          paid_requests: BigInt(0),
+          unpaid_requests: BigInt(1),
+          revenue: BigInt(0),
+          failed_verifications: BigInt(0),
+        },
+        {
+          bucket_epoch: BigInt(Math.floor((start + 3 * hour) / 1000 / hourSec) * hourSec),
+          paid_requests: BigInt(0),
+          unpaid_requests: BigInt(0),
+          revenue: BigInt(0),
+          failed_verifications: BigInt(1),
+        },
+      ];
+      (mockPrisma.$queryRaw as jest.Mock).mockResolvedValue(mockBucketRows);
 
       const series = await service.getTimeSeries(providerId, OWNER, 60, 24);
 
-      expect(mockPrisma.analyticsEvent.findMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { providerId, createdAt: { gte: startTime } },
-        }),
-      );
+      // Should call $queryRaw (not findMany) — one SQL query, no unbounded fetch
+      expect(mockPrisma.$queryRaw).toHaveBeenCalled();
+      expect(mockPrisma.analyticsEvent.findMany).not.toHaveBeenCalled();
+
       expect(series).toHaveLength(25);
 
       const bucket1 = series.find((p) => p.timestamp === new Date(start + hour).toISOString());
@@ -295,7 +311,7 @@ describe('AnalyticsService', () => {
       await expect(service.getTimeSeries('provider-3', OTHER_OWNER, 60, 24)).rejects.toThrow(
         NotFoundException,
       );
-      expect(mockPrisma.analyticsEvent.findMany).not.toHaveBeenCalled();
+      expect(mockPrisma.$queryRaw).not.toHaveBeenCalled();
     });
   });
 

@@ -23,10 +23,10 @@ model Provider {
 
   routes               Route[]
   payments             Payment[]
-  apiKeys              ApiKey[]
-  sessions             Session[]
   notifications        Notification[]
   prepaidCredits       PrepaidCredit[]
+  underpaymentDebts    UnderpaymentDebt[]
+  payoutProposals      PayoutProposal[]
 
   @@index([walletAddress])
   @@index([active])
@@ -78,6 +78,7 @@ model Payment {
   route         Route    @relation(fields: [routeId], references: [id], onDelete: Cascade)
   provider      Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
 
+  @@unique([txHash])
   @@index([txHash])
   @@index([payerAddress])
   @@index([providerId])
@@ -100,6 +101,32 @@ model Wallet {
   @@index([address])
 }
 
+// ── Underpayment Debts (per-token enforcement) ─
+//
+// Records the deficit when a per-token request's actual cost (usage tokens ×
+// per-token price) exceeds the deposit the payer sent. A payer with open debt
+// on a provider must top up (pay deposit + debt in one transaction) before the
+// gateway grants further access on that provider.
+
+model UnderpaymentDebt {
+  id           String   @id @default(uuid())
+  providerId   String
+  payerAddress String
+  /// Quote whose metered cost exceeded its deposit. Unique — one debt per quote.
+  quoteId      String   @unique
+  routeId      String
+  /// Deficit in stroops (actualCost − deposit), always > 0.
+  amount       BigInt
+  status       String   @default("open") // open | settled
+  createdAt    DateTime @default(now())
+  settledAt    DateTime?
+
+  provider     Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@index([payerAddress, providerId, status])
+  @@index([providerId, status])
+}
+
 // ── Prepaid Credits (v2) ─────────────────────
 
 model PrepaidCredit {
@@ -120,40 +147,44 @@ model PrepaidCredit {
   @@index([providerId])
 }
 
-// ── API Keys (for provider dashboard) ────────
+// ── Payout Proposals (multisig automation) ───
+//
+// Tracks provider payouts proposed through the multisig Soroban contract.
+// The gateway computes confirmed provider revenue from `Payment` rows and
+// proposes a transfer of that amount from the multisig wallet to the
+// provider's `payoutWalletAddress`; M-of-N signer approvals on-chain execute
+// the transfer. This table is the off-chain ledger mirroring the on-chain
+// proposal (status transitions below are written by the payout service).
 
-model ApiKey {
-  id          String    @id @default(uuid())
-  providerId  String
-  keyHash     String    @unique
-  name        String
-  permissions String[]  @default(["read"])
-  lastUsedAt  DateTime?
-  expiresAt   DateTime?
-  active      Boolean   @default(true)
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-
-  provider    Provider  @relation(fields: [providerId], references: [id], onDelete: Cascade)
-
-  @@index([providerId])
-  @@index([keyHash])
-}
-
-// ── Sessions ─────────────────────────────────
-
-model Session {
+model PayoutProposal {
   id          String   @id @default(uuid())
   providerId  String
-  token       String   @unique
-  expiresAt   DateTime
+  /// On-chain proposal id returned by multisig.propose (null until proposed).
+  proposalId  Int?
+  /// Destination of the payout — the provider's payoutWalletAddress.
+  destination String
+  /// Payout amount in stroops.
+  amount      BigInt
+  asset       String   @default("USDC")
+  /// pending | proposed | approved | executed | failed | cancelled
+  status      String   @default("pending")
+  /// Approving signer addresses (mirrors on-chain approvals for the dashboard).
+  approvals   Json?
+  /// Multisig threshold at propose time (for threshold-1 auto-approve).
+  threshold   Int?
+  /// Stellar transaction hash of the on-chain proposal/execution.
+  txHash      String?
+  /// Human-readable failure reason when the on-chain call failed.
+  error       String?
+  executedAt  DateTime?
   createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   provider    Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
 
-  @@index([providerId])
-  @@index([token])
-  @@index([expiresAt])
+  @@index([providerId, status])
+  @@index([status])
+  @@index([createdAt])
 }
 
 // ── Notifications ────────────────────────────

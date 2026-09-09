@@ -5,11 +5,35 @@
 //!
 //! Use case: Provider wants to require multiple signers
 //! before transferring accumulated gateway revenue to their wallet.
+//!
+//! Storage layout (domain per key):
+//!   CONFIG              → MultisigConfig   [instance]
+//!   PROPOSAL_COUNT      → u32              [instance] (monotonic counter)
+//!   (PROPOSALS, id)     → Proposal         [persistent]
+//!
+//! Instance storage physically lives inside the single ContractInstance
+//! ledger entry, which is loaded in full on EVERY invocation and is capped by
+//! the network ledger-entry size limit — so it only holds small, fixed-size
+//! data (config + one counter). Proposals are unbounded and each one is an
+//! independent ledger entry in PERSISTENT storage, so reads/writes stay O(1)
+//! (constant gas) no matter how many proposals accumulate.
+//!
+//! TTL / rent: persistent entries expire independently, so every
+//! state-mutating function extends BOTH the instance entry and each
+//! persistent entry it writes back to LEDGERS_TO_LIVE — a free no-op while
+//! the remaining TTL is above LEDGER_THRESHOLD. Without this the network
+//! default TTL (~4096 ledgers) would archive proposals and config within
+//! hours. Read-only functions deliberately do NOT extend any TTL (reads are
+//! free and permissionless, so letting anyone bump the TTL by spamming reads
+//! would be an abuse vector); an entry not written for LEDGERS_TO_LIVE
+//! ledgers after its last write may require a paid restore-from-archive to be
+//! read again — the explicit durability/rent tradeoff of per-entry storage.
 
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, token, Address, Env, String, Symbol, Vec,
+    contract, contractimpl, contracttype, symbol_short, token, Address, Env, IntoVal, Symbol,
+    Val, Vec,
 };
 
 #[contracttype]
@@ -20,7 +44,11 @@ pub struct MultisigConfig {
     pub token: Address,
 }
 
+// `createdAt` is deliberately camelCase: the field is part of the on-chain
+// data layout (Soroban clients address it as `createdAt`). Keeping the name
+// stable preserves ABI compatibility with deployed instances.
 #[contracttype]
+#[allow(non_snake_case)]
 #[derive(Clone)]
 pub struct Proposal {
     pub id: u32,
@@ -34,6 +62,47 @@ pub struct Proposal {
 const CONFIG_KEY: Symbol = symbol_short!("CONFIG");
 const PROPOSALS_KEY: Symbol = symbol_short!("PROPS");
 const PROPOSAL_COUNT_KEY: Symbol = symbol_short!("PROPCT");
+
+// ── Storage TTL ─────────────────────────────
+//
+// Every ledger entry (the ContractInstance entry AND each persistent entry)
+// is archived once its TTL expires unless explicitly extended (the network
+// default is only ~4096 ledgers — hours on mainnet). Only MUTATING functions
+// (init, propose, approve, set_signers) extend TTLs back to LEDGERS_TO_LIVE —
+// the instance entry via `extend_ttl` and each persistent record via
+// `set_persistent`; both calls are free no-ops while the remaining TTL is
+// above LEDGER_THRESHOLD. Read-only functions never extend any TTL — an
+// unbounded read flood must not be able to keep a contract alive forever at
+// the caller's expense.
+const LEDGER_THRESHOLD: u32 = 500_000;
+const LEDGERS_TO_LIVE: u32 = 1_000_000;
+
+/// Maximum number of entries a single paginated read may return.
+const MAX_PAGE_SIZE: u32 = 100;
+
+/// Bump the TTL of the contract instance entry (config + counter) so it is
+/// never archived while the contract is in use.
+/// Call from mutating functions only — never from read-only paths.
+fn extend_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(LEDGER_THRESHOLD, LEDGERS_TO_LIVE);
+}
+
+/// Write a persistent (per-key) ledger entry and extend that entry's TTL so
+/// it stays alive. Persistent keys are independent ledger entries — unlike
+/// instance storage, each one must have its TTL bumped individually on write.
+/// Call from mutating functions only — never from read-only paths.
+fn set_persistent<K, V>(env: &Env, key: &K, val: &V)
+where
+    K: IntoVal<Env, Val>,
+    V: IntoVal<Env, Val>,
+{
+    env.storage().persistent().set(key, val);
+    env.storage()
+        .persistent()
+        .extend_ttl(key, LEDGER_THRESHOLD, LEDGERS_TO_LIVE);
+}
 
 // ── Events ───────────────────────────────────
 
@@ -52,12 +121,19 @@ fn emit_executed(env: &Env, proposal_id: u32, destination: &Address, amount: i12
     env.events().publish(topics, (destination.clone(), amount));
 }
 
+fn emit_signers_changed(env: &Env, new_signers: &Vec<Address>, new_threshold: u32) {
+    let topics = (symbol_short!("sigs_chng"),);
+    env.events()
+        .publish(topics, (new_signers.clone(), new_threshold));
+}
+
 #[contract]
 pub struct Multisig;
 
 #[contractimpl]
 impl Multisig {
     pub fn init(env: Env, signers: Vec<Address>, threshold: u32, token: Address) {
+        extend_ttl(&env);
         // Prevent re-initialization: `init` may only be called once. Without
         // this guard, anyone could re-initialize the contract with their own
         // signer set (threshold = 1) and drain every token it holds.
@@ -86,15 +162,12 @@ impl Multisig {
     }
 
     pub fn propose(env: Env, destination: Address, amount: i128) -> u32 {
+        extend_ttl(&env);
         if amount <= 0 {
             panic!("Amount must be positive");
         }
 
-        let mut count: u32 = env
-            .storage()
-            .instance()
-            .get(&PROPOSAL_COUNT_KEY)
-            .unwrap();
+        let mut count: u32 = env.storage().instance().get(&PROPOSAL_COUNT_KEY).unwrap();
         let proposal_id = count;
         count += 1;
         env.storage().instance().set(&PROPOSAL_COUNT_KEY, &count);
@@ -109,7 +182,7 @@ impl Multisig {
         };
 
         let proposals_key = (PROPOSALS_KEY, proposal_id);
-        env.storage().instance().set(&proposals_key, &proposal);
+        set_persistent(&env, &proposals_key, &proposal);
 
         emit_proposed(&env, proposal_id, &proposal.destination, proposal.amount);
 
@@ -117,6 +190,7 @@ impl Multisig {
     }
 
     pub fn approve(env: Env, signer: Address, proposal_id: u32) {
+        extend_ttl(&env);
         signer.require_auth();
 
         let config: MultisigConfig = env.storage().instance().get(&CONFIG_KEY).unwrap();
@@ -125,11 +199,7 @@ impl Multisig {
         }
 
         let proposals_key = (PROPOSALS_KEY, proposal_id);
-        let mut proposal: Proposal = env
-            .storage()
-            .instance()
-            .get(&proposals_key)
-            .unwrap();
+        let mut proposal: Proposal = env.storage().persistent().get(&proposals_key).unwrap();
 
         if proposal.executed {
             panic!("Proposal already executed");
@@ -156,20 +226,54 @@ impl Multisig {
             emit_executed(&env, proposal_id, &proposal.destination, proposal.amount);
         }
 
-        env.storage().instance().set(&proposals_key, &proposal);
+        // Write back the updated proposal (approvals / executed flag) as its
+        // own persistent entry — `set_persistent` also extends its TTL, so a
+        // proposal that takes weeks to reach quorum stays alive throughout.
+        set_persistent(&env, &proposals_key, &proposal);
     }
 
-    /// Rotate the signer set. Any one of the current signers may authorize the
-    /// rotation by passing themselves as `signer`; the new threshold is
-    /// validated against the new signer list.
-    pub fn set_signers(env: Env, signer: Address, new_signers: Vec<Address>, new_threshold: u32) {
+    /// Rotate the signer set and threshold.
+    ///
+    /// A rotation is a security-critical configuration change, so it must be
+    /// authorized by at least the CURRENT `threshold` of distinct current
+    /// signers — the same quorum required to execute a payout. The caller
+    /// supplies the list of approving signers (`approvers`); the contract
+    /// requires each of them to cryptographically authorize this invocation
+    /// (`require_auth`) and to be a current signer, then enforces the quorum
+    /// against the current configuration.
+    ///
+    /// This prevents a single compromised signer from unilaterally replacing
+    /// the signer set with attacker-controlled addresses (e.g. threshold = 1)
+    /// and draining the wallet.
+    pub fn set_signers(
+        env: Env,
+        approvers: Vec<Address>,
+        new_signers: Vec<Address>,
+        new_threshold: u32,
+    ) {
+        extend_ttl(&env);
         let mut config: MultisigConfig = env.storage().instance().get(&CONFIG_KEY).unwrap();
 
-        // Gate: `signer` must authorize the call and be a current signer
-        // (any-of-N rather than requiring every signer to approve).
-        signer.require_auth();
-        if !config.signers.contains(&signer) {
-            panic!("Not an authorized signer");
+        // Collect the distinct listed approvers. Every one of them must be a
+        // current signer. `require_auth` makes it impossible to claim approval
+        // from a signer who did not actually sign — and because duplicates are
+        // never pushed, each distinct approver authorizes exactly once (a
+        // duplicate entry would otherwise hit `Error(Auth, ExistingValue)`).
+        let mut unique_approvers: Vec<Address> = Vec::new(&env);
+        for approver in approvers.iter() {
+            if !config.signers.contains(&approver) {
+                panic!("Not an authorized signer");
+            }
+            if !unique_approvers.contains(&approver) {
+                approver.require_auth();
+                unique_approvers.push_back(approver.clone());
+            }
+        }
+
+        // Quorum gate: rotation requires the same consent as a payout.
+        // Duplicate approvers count only once.
+        if (unique_approvers.len() as u32) < config.threshold {
+            panic!("Rotation requires at least the threshold of current signer approvals");
         }
 
         if new_threshold == 0 {
@@ -185,32 +289,50 @@ impl Multisig {
         config.signers = new_signers;
         config.threshold = new_threshold;
         env.storage().instance().set(&CONFIG_KEY, &config);
+
+        emit_signers_changed(&env, &config.signers, config.threshold);
     }
 
+    /// O(1) lookup of a single proposal. Read-only — does not extend any
+    /// storage TTL.
     pub fn get_proposal(env: Env, proposal_id: u32) -> Proposal {
         let proposals_key = (PROPOSALS_KEY, proposal_id);
-        env.storage().instance().get(&proposals_key).unwrap()
+        env.storage().persistent().get(&proposals_key).unwrap()
     }
 
-    /// Total number of proposals ever created.
+    /// Total number of proposals ever created. Read-only — does not extend
+    /// any storage TTL.
     pub fn get_proposal_count(env: Env) -> u32 {
-        env.storage().instance().get(&PROPOSAL_COUNT_KEY).unwrap_or(0)
+        env.storage()
+            .instance()
+            .get(&PROPOSAL_COUNT_KEY)
+            .unwrap_or(0)
     }
 
-    /// Paginated proposal listing — O(limit) reads, bounded gas.
+    /// Paginated proposal listing — O(limit) reads, bounded gas. Read-only —
+    /// does not extend any storage TTL.
+    ///
+    /// The caller-supplied `limit` is clamped to MAX_PAGE_SIZE so a single
+    /// invocation can never trigger more than 100 storage reads, and
+    /// `saturating_add` prevents u32 overflow in the end-index computation.
     pub fn get_proposals(env: Env, offset: u32, limit: u32) -> Vec<Proposal> {
-        let count: u32 = env.storage().instance().get(&PROPOSAL_COUNT_KEY).unwrap_or(0);
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&PROPOSAL_COUNT_KEY)
+            .unwrap_or(0);
         let mut result = Vec::new(&env);
-        let end = (offset + limit).min(count);
+        let end = offset.saturating_add(limit.min(MAX_PAGE_SIZE)).min(count);
         for i in offset..end {
             let proposals_key = (PROPOSALS_KEY, i);
-            if let Some(p) = env.storage().instance().get(&proposals_key) {
+            if let Some(p) = env.storage().persistent().get(&proposals_key) {
                 result.push_back(p);
             }
         }
         result
     }
 
+    /// O(1) config lookup. Read-only — does not extend the storage TTL.
     pub fn get_config(env: Env) -> MultisigConfig {
         env.storage().instance().get(&CONFIG_KEY).unwrap()
     }
@@ -231,10 +353,20 @@ fn has_unique_signers(signers: &Vec<Address>) -> bool {
 // ── Tests ────────────────────────────────────
 
 #[cfg(test)]
+mod bench;
+
+#[cfg(test)]
+mod property;
+
+#[cfg(test)]
 mod test {
     use super::*;
+    use soroban_sdk::testutils::storage::Instance as _;
+    use soroban_sdk::testutils::storage::Persistent as _;
     use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::testutils::Ledger as _;
     use soroban_sdk::token::StellarAssetClient;
+    use soroban_sdk::String;
 
     #[test]
     fn test_init_with_valid_signers() {
@@ -517,19 +649,226 @@ mod test {
         let client = MultisigClient::new(&env, &contract_id);
         client.init(&signers, &2u32, &token);
 
-        // A current signer rotates the set.
+        // A quorum of current signers (both, threshold = 2) rotates the set.
+        let approvers = Vec::from_array(&env, [signer1.clone(), signer2.clone()]);
         let new_signers = Vec::from_array(&env, [signer2.clone(), signer3.clone()]);
-        client.mock_all_auths().set_signers(&signer1, &new_signers, &1u32);
+        client
+            .mock_all_auths()
+            .set_signers(&approvers, &new_signers, &1u32);
 
         let config = client.get_config();
         assert_eq!(config.signers.len(), 2);
         assert_eq!(config.threshold, 1);
+    }
 
-        // An outsider (not a current signer) cannot rotate, even with auth.
+    // ── Rotation quorum security tests ─────────────
+
+    #[test]
+    #[should_panic(expected = "Rotation requires")]
+    fn test_single_signer_cannot_rotate_when_threshold_requires_quorum() {
+        // The critical vulnerability: with a 2-of-2 config, a single signer
+        // must NOT be able to replace the signer set with attacker-controlled
+        // addresses and threshold 1 — otherwise one compromised key could
+        // drain the entire wallet.
+        let env = Env::default();
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        let signers = Vec::from_array(&env, [signer1.clone(), signer2.clone()]);
+
+        let contract_id = env.register(Multisig, ());
+        let client = MultisigClient::new(&env, &contract_id);
+        client.init(&signers, &2u32, &token);
+
+        // Only signer1 approves — one short of the threshold of 2.
+        let approvers = Vec::from_array(&env, [signer1.clone()]);
+        let attacker_signers = Vec::from_array(&env, [attacker.clone()]);
+        client
+            .mock_all_auths()
+            .set_signers(&approvers, &attacker_signers, &1u32);
+    }
+
+    #[test]
+    #[should_panic(expected = "Rotation requires")]
+    fn test_rotation_below_threshold_rejected_in_2_of_3_config() {
+        // In a 2-of-3 config, two signers may rotate — but only one may not.
+        let env = Env::default();
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
+        let signer3 = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        let signers = Vec::from_array(&env, [signer1.clone(), signer2.clone(), signer3.clone()]);
+
+        let contract_id = env.register(Multisig, ());
+        let client = MultisigClient::new(&env, &contract_id);
+        client.init(&signers, &2u32, &token);
+
+        let approvers = Vec::from_array(&env, [signer1.clone()]);
+        let attacker_signers = Vec::from_array(&env, [attacker.clone()]);
+        client
+            .mock_all_auths()
+            .set_signers(&approvers, &attacker_signers, &1u32);
+    }
+
+    #[test]
+    fn test_rotation_succeeds_with_threshold_quorum_from_larger_set() {
+        // In a 2-of-3 config, any two distinct current signers may rotate.
+        let env = Env::default();
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
+        let signer3 = Address::generate(&env);
+        let signer4 = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        let signers = Vec::from_array(&env, [signer1.clone(), signer2.clone(), signer3.clone()]);
+
+        let contract_id = env.register(Multisig, ());
+        let client = MultisigClient::new(&env, &contract_id);
+        client.init(&signers, &2u32, &token);
+
+        let approvers = Vec::from_array(&env, [signer1.clone(), signer3.clone()]);
+        let new_signers = Vec::from_array(&env, [signer2.clone(), signer4.clone()]);
+        client
+            .mock_all_auths()
+            .set_signers(&approvers, &new_signers, &2u32);
+
+        let config = client.get_config();
+        assert_eq!(config.signers.len(), 2);
+        assert_eq!(config.threshold, 2);
+    }
+
+    #[test]
+    fn test_quorum_with_duplicates_succeeds() {
+        // A quorum that happens to list one signer twice must still succeed
+        // (duplicates are deduplicated before `require_auth`, so they neither
+        // pad the count nor trip `Error(Auth, ExistingValue)`).
+        let env = Env::default();
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
+        let signer3 = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        let signers = Vec::from_array(&env, [signer1.clone(), signer2.clone()]);
+
+        let contract_id = env.register(Multisig, ());
+        let client = MultisigClient::new(&env, &contract_id);
+        client.init(&signers, &2u32, &token);
+
+        let approvers = Vec::from_array(&env, [signer1.clone(), signer2.clone(), signer1.clone()]);
+        let new_signers = Vec::from_array(&env, [signer2.clone(), signer3.clone()]);
+        client
+            .mock_all_auths()
+            .set_signers(&approvers, &new_signers, &2u32);
+
+        let config = client.get_config();
+        assert_eq!(config.signers.len(), 2);
+        assert_eq!(config.threshold, 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "Rotation requires")]
+    fn test_duplicate_approvers_count_once_against_threshold() {
+        // Approving twice with the same signer is still one approval — it
+        // cannot be padded to reach the quorum.
+        let env = Env::default();
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        let signers = Vec::from_array(&env, [signer1.clone(), signer2.clone()]);
+
+        let contract_id = env.register(Multisig, ());
+        let client = MultisigClient::new(&env, &contract_id);
+        client.init(&signers, &2u32, &token);
+
+        let duplicate_approvers = Vec::from_array(&env, [signer1.clone(), signer1.clone()]);
+        let new_signers = Vec::from_array(&env, [signer2.clone()]);
+        client
+            .mock_all_auths()
+            .set_signers(&duplicate_approvers, &new_signers, &1u32);
+    }
+
+    #[test]
+    #[should_panic(expected = "Not an authorized signer")]
+    fn test_rotation_rejects_approver_who_is_not_a_current_signer() {
+        // An outsider listed as an approver is rejected even when a quorum of
+        // signers is present.
+        let env = Env::default();
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
         let outsider = Address::generate(&env);
-        let outsider_signers = Vec::from_array(&env, [outsider.clone()]);
-        let result = client.try_set_signers(&outsider, &outsider_signers, &1u32);
+        let token = Address::generate(&env);
+
+        let signers = Vec::from_array(&env, [signer1.clone(), signer2.clone()]);
+
+        let contract_id = env.register(Multisig, ());
+        let client = MultisigClient::new(&env, &contract_id);
+        client.init(&signers, &2u32, &token);
+
+        let approvers = Vec::from_array(&env, [signer1.clone(), outsider.clone()]);
+        let new_signers = Vec::from_array(&env, [outsider.clone()]);
+        client
+            .mock_all_auths()
+            .set_signers(&approvers, &new_signers, &1u32);
+    }
+
+    #[test]
+    fn test_rotation_requires_each_approver_to_authorize() {
+        // Without mock auths, an approver who did not sign fails require_auth
+        // and the configuration is left unchanged.
+        let env = Env::default();
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        let signers = Vec::from_array(&env, [signer1.clone(), signer2.clone()]);
+
+        let contract_id = env.register(Multisig, ());
+        let client = MultisigClient::new(&env, &contract_id);
+        client.init(&signers, &2u32, &token);
+
+        let approvers = Vec::from_array(&env, [signer1.clone(), signer2.clone()]);
+        let new_signers = Vec::from_array(&env, [signer1.clone()]);
+
+        // No auth payload → require_auth for signer1 must fail.
+        let result = client.try_set_signers(&approvers, &new_signers, &1u32);
         assert!(result.is_err());
+
+        // Config unchanged.
+        let config = client.get_config();
+        assert_eq!(config.signers.len(), 2);
+        assert_eq!(config.threshold, 2);
+    }
+
+    #[test]
+    fn test_single_signer_rotation_allowed_when_threshold_is_one() {
+        // In a 1-of-1 config the single signer IS the entire quorum and may
+        // rotate (they could drain the wallet directly anyway).
+        let env = Env::default();
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        let signers = Vec::from_array(&env, [signer1.clone()]);
+
+        let contract_id = env.register(Multisig, ());
+        let client = MultisigClient::new(&env, &contract_id);
+        client.init(&signers, &1u32, &token);
+
+        let approvers = Vec::from_array(&env, [signer1.clone()]);
+        let new_signers = Vec::from_array(&env, [signer2.clone()]);
+        client
+            .mock_all_auths()
+            .set_signers(&approvers, &new_signers, &1u32);
+
+        let config = client.get_config();
+        assert_eq!(config.signers.len(), 1);
+        assert_eq!(config.signers.get(0).unwrap(), signer2);
+        assert_eq!(config.threshold, 1);
     }
 
     #[test]
@@ -555,5 +894,301 @@ mod test {
         assert_eq!(page.len(), 2);
         assert_eq!(page.get(0).unwrap().amount, 20);
         assert_eq!(page.get(1).unwrap().amount, 30);
+    }
+
+    #[test]
+    fn test_get_proposals_limit_is_clamped() {
+        // A caller must not be able to request an unbounded page: the limit is
+        // clamped to MAX_PAGE_SIZE, so a single read can never issue more than
+        // 100 storage reads.
+        let env = Env::default();
+        let signer1 = Address::generate(&env);
+        let token = Address::generate(&env);
+        let destination = Address::generate(&env);
+
+        let signers = Vec::from_array(&env, [signer1.clone()]);
+
+        let contract_id = env.register(Multisig, ());
+        let client = MultisigClient::new(&env, &contract_id);
+        client.init(&signers, &1u32, &token);
+
+        for i in 0..150 {
+            client.propose(&destination, &((i + 1) as i128 * 10));
+        }
+
+        // Request 150 entries — only MAX_PAGE_SIZE are returned.
+        let page = client.get_proposals(&0, &150);
+        assert_eq!(page.len(), MAX_PAGE_SIZE);
+
+        // A u32::MAX offset must not panic (saturating arithmetic) and simply
+        // returns nothing.
+        let overflow = client.get_proposals(&u32::MAX, &u32::MAX);
+        assert_eq!(overflow.len(), 0);
+    }
+
+    #[test]
+    fn test_reads_do_not_extend_ttl() {
+        // Read-only functions must not bump the instance TTL: an unbounded
+        // read flood from any caller would otherwise keep the contract alive
+        // forever. init + propose already extended it, so a subsequent read
+        // must leave it exactly unchanged.
+        let env = Env::default();
+        let signer1 = Address::generate(&env);
+        let token = Address::generate(&env);
+        let destination = Address::generate(&env);
+
+        let signers = Vec::from_array(&env, [signer1.clone()]);
+
+        let contract_id = env.register(Multisig, ());
+        let client = MultisigClient::new(&env, &contract_id);
+        client.init(&signers, &1u32, &token);
+
+        let proposal_id = client.propose(&destination, &100_000_000i128);
+
+        let ttl_before = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
+        // The proposal is now its own persistent entry — reads must not bump
+        // its TTL either.
+        let proposals_key = (PROPOSALS_KEY, proposal_id);
+        let entry_before = env.as_contract(&contract_id, || {
+            env.storage().persistent().get_ttl(&proposals_key)
+        });
+
+        // Read-only calls: config + lookups + an aggressive page request.
+        client.get_config();
+        client.get_proposal(&proposal_id);
+        client.get_proposals(&0, &u32::MAX);
+        client.get_proposal_count();
+
+        let ttl_after = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
+        assert_eq!(
+            ttl_after, ttl_before,
+            "a read-only call must not extend the instance TTL"
+        );
+        let entry_after = env.as_contract(&contract_id, || {
+            env.storage().persistent().get_ttl(&proposals_key)
+        });
+        assert_eq!(
+            entry_after, entry_before,
+            "a read-only call must not extend a persistent entry's TTL"
+        );
+    }
+
+    // ── Storage TTL tests ────────────────────────
+
+    #[test]
+    fn test_ttl_extended_after_init() {
+        // The network default persistent TTL is only ~4096 ledgers. `init`
+        // must explicitly extend the instance + code TTL far past that, or
+        // the contract would be archived within hours.
+        let env = Env::default();
+        let signer1 = Address::generate(&env);
+        let token = Address::generate(&env);
+        let signers = Vec::from_array(&env, [signer1.clone()]);
+
+        let contract_id = env.register(Multisig, ());
+        let client = MultisigClient::new(&env, &contract_id);
+        client.init(&signers, &1u32, &token);
+
+        // Storage access from tests must run in the contract's context.
+        let ttl = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
+        assert!(
+            ttl >= LEDGERS_TO_LIVE,
+            "contract instance TTL was not extended past the network default"
+        );
+    }
+
+    #[test]
+    fn test_proposal_survives_default_ttl() {
+        // Without explicit TTL extension a proposal would be archived after
+        // ~4096 ledgers. Jump well past that and verify the proposal is
+        // still readable (a read of an archived entry errors in tests).
+        let env = Env::default();
+        let signer1 = Address::generate(&env);
+        let token = Address::generate(&env);
+        let destination = Address::generate(&env);
+        let signers = Vec::from_array(&env, [signer1.clone()]);
+
+        let contract_id = env.register(Multisig, ());
+        let client = MultisigClient::new(&env, &contract_id);
+        client.init(&signers, &1u32, &token);
+
+        let proposal_id = client.propose(&destination, &100_000_000i128);
+
+        // The write path itself must extend the instance TTL — not just init.
+        let ttl = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
+        assert!(
+            ttl >= LEDGERS_TO_LIVE,
+            "propose did not extend the instance TTL"
+        );
+
+        // The proposal is a per-id persistent entry and must have had its OWN
+        // TTL extended — not just the instance entry's.
+        let proposals_key = (PROPOSALS_KEY, proposal_id);
+        let entry_ttl = env.as_contract(&contract_id, || {
+            env.storage().persistent().get_ttl(&proposals_key)
+        });
+        assert!(
+            entry_ttl >= LEDGERS_TO_LIVE,
+            "propose did not extend the proposal entry TTL"
+        );
+
+        // Jump 100k ledgers (>> the ~4096 default TTL, < LEDGERS_TO_LIVE).
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + 100_000);
+
+        let proposal = client.get_proposal(&proposal_id);
+        assert_eq!(proposal.amount, 100_000_000i128);
+        assert!(!proposal.executed);
+        assert_eq!(client.get_proposal_count(), 1);
+    }
+
+    #[test]
+    fn test_proposal_entry_ttl_refreshed_on_approve() {
+        // A proposal awaiting approvals can outlive a single write: every
+        // approve() rewrites the proposal entry, and that rewrite must refresh
+        // the entry's TTL so a slow-maturing proposal is not archived mid-
+        // approval.
+        let env = Env::default();
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
+        let token = Address::generate(&env);
+        let destination = Address::generate(&env);
+
+        let signers = Vec::from_array(&env, [signer1.clone(), signer2.clone()]);
+
+        let contract_id = env.register(Multisig, ());
+        let client = MultisigClient::new(&env, &contract_id);
+        client.init(&signers, &2u32, &token);
+
+        let proposal_id = client.propose(&destination, &100_000_000i128);
+        let proposals_key = (PROPOSALS_KEY, proposal_id);
+
+        // First approval rewrites the entry and keeps it alive.
+        client.mock_all_auths().approve(&signer1, &proposal_id);
+        let ttl = env.as_contract(&contract_id, || {
+            env.storage().persistent().get_ttl(&proposals_key)
+        });
+        assert!(
+            ttl >= LEDGERS_TO_LIVE,
+            "approve did not keep the proposal entry TTL extended"
+        );
+
+        // The proposal is still tracked after the write-back.
+        let proposal = client.get_proposal(&proposal_id);
+        assert_eq!(proposal.approvals.len(), 1);
+        assert!(!proposal.executed);
+    }
+
+    // ── Boundary / rotation config-validation edge tests ──
+
+    #[test]
+    #[should_panic]
+    fn test_approve_nonexistent_proposal_panics() {
+        // Approving a proposal id that was never created must not silently
+        // succeed — the missing storage entry panics rather than corrupting
+        // state or minting an approval out of thin air.
+        let env = Env::default();
+        let signer1 = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        let signers = Vec::from_array(&env, [signer1.clone()]);
+
+        let contract_id = env.register(Multisig, ());
+        let client = MultisigClient::new(&env, &contract_id);
+        client.init(&signers, &1u32, &token);
+
+        client.mock_all_auths().approve(&signer1, &999u32);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "Rotation requires at least the threshold of current signer approvals"
+    )]
+    fn test_rotation_with_no_approvers_rejected() {
+        // Even in a 1-of-N configuration, an empty approver list can never
+        // meet the current threshold — rotation needs at least one real
+        // current signer.
+        let env = Env::default();
+        let signer1 = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        let signers = Vec::from_array(&env, [signer1.clone()]);
+
+        let contract_id = env.register(Multisig, ());
+        let client = MultisigClient::new(&env, &contract_id);
+        client.init(&signers, &1u32, &token);
+
+        let empty_approvers = Vec::new(&env);
+        let replacement = Vec::from_array(&env, [Address::generate(&env)]);
+        client.set_signers(&empty_approvers, &replacement, &1u32);
+    }
+
+    #[test]
+    #[should_panic(expected = "Threshold must be at least 1")]
+    fn test_rotation_rejects_zero_new_threshold() {
+        // The quorum is met, but the new configuration is still invalid: a
+        // threshold of 0 would let a single (or no) signer authorize payouts.
+        let env = Env::default();
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        let signers = Vec::from_array(&env, [signer1.clone(), signer2.clone()]);
+
+        let contract_id = env.register(Multisig, ());
+        let client = MultisigClient::new(&env, &contract_id);
+        client.init(&signers, &2u32, &token);
+
+        let approvers = Vec::from_array(&env, [signer1.clone(), signer2.clone()]);
+        let replacement = Vec::from_array(&env, [Address::generate(&env)]);
+        client
+            .mock_all_auths()
+            .set_signers(&approvers, &replacement, &0u32);
+    }
+
+    #[test]
+    #[should_panic(expected = "Threshold cannot exceed number of signers")]
+    fn test_rotation_rejects_threshold_exceeding_new_signers() {
+        let env = Env::default();
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        let signers = Vec::from_array(&env, [signer1.clone(), signer2.clone()]);
+
+        let contract_id = env.register(Multisig, ());
+        let client = MultisigClient::new(&env, &contract_id);
+        client.init(&signers, &2u32, &token);
+
+        // Quorum met (2-of-2), but the rotated config demands 3 approvals
+        // from a 1-signer set — invalid.
+        let approvers = Vec::from_array(&env, [signer1.clone(), signer2.clone()]);
+        let replacement = Vec::from_array(&env, [signer1.clone()]);
+        client
+            .mock_all_auths()
+            .set_signers(&approvers, &replacement, &3u32);
+    }
+
+    #[test]
+    #[should_panic(expected = "Duplicate signers are not allowed")]
+    fn test_rotation_rejects_duplicate_new_signers() {
+        let env = Env::default();
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        let signers = Vec::from_array(&env, [signer1.clone(), signer2.clone()]);
+
+        let contract_id = env.register(Multisig, ());
+        let client = MultisigClient::new(&env, &contract_id);
+        client.init(&signers, &2u32, &token);
+
+        // Quorum met, but the rotated signer set contains a duplicate — a
+        // single address counting twice would let one key dominate the set.
+        let approvers = Vec::from_array(&env, [signer1.clone(), signer2.clone()]);
+        let duplicated = Vec::from_array(&env, [signer1.clone(), signer1.clone()]);
+        client
+            .mock_all_auths()
+            .set_signers(&approvers, &duplicated, &2u32);
     }
 }
