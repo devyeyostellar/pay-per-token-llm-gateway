@@ -19,6 +19,8 @@ import { AdminService } from '../admin/admin.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
 import { MetricsService } from '../../common/metrics.service';
 import { RateLimitGuard } from '../../common/guards/rate-limit.guard';
+import { childSpan, type TraceRequest } from '../../common/trace-context.middleware';
+import { serializeTraceparent } from '@x402/logger';
 import { chatCompletionRequestSchema, txHashSchema } from '@x402/validation';
 import { calculatePrice, comparePayment, DEFAULT_TOKEN_ESTIMATE } from '@x402/x402-core';
 import { getConfig } from '@x402/config';
@@ -56,7 +58,10 @@ export class ProxyController {
   @All('chat/completions')
   @HttpCode(HttpStatus.OK)
   async handleChatCompletion(@Req() req: Request, @Res() res: Response) {
-    const traceId = generateId();
+    // The trace context (W3C `traceparent`) was established by the
+    // trace-context middleware; controllers derive child spans from it.
+    const traceContext = (req as TraceRequest).traceContext;
+    const traceId = traceContext?.traceId ?? generateId();
     const startTime = Date.now();
 
     try {
@@ -100,11 +105,21 @@ export class ProxyController {
         }
       }
       if (!txHash) {
-        return this.handle402Response(res, route, traceId, model, body);
+        const quoteSpan = childSpan('quote.generate', req as TraceRequest, {
+          model,
+          pricingModel: route.pricingModel,
+        });
+        await this.handle402Response(res, route, traceId, model, body);
+        quoteSpan.end({ model, route: route.path });
+        return;
       }
 
-      // 4. Verify payment (includes cross-route replay protection)
+      // 4. Verify payment (includes cross-route replay protection). The
+      //    span wraps the whole verify → claim → debt-gate path so its
+      //    duration reflects the full on-chain verification.
+      const verifySpan = childSpan('payment.verify', req as TraceRequest, { txHash });
       const verified = await this.verifyAndConfirmPayment(txHash, route, res, traceId);
+      verifySpan.end({ txHash, verified });
       if (!verified) {
         return; // 402 error response already sent
       }
@@ -119,8 +134,17 @@ export class ProxyController {
       //    was estimated from the default token budget.
       const forwardBody = this.capForwardBody(body, route, payment);
 
+      // Span over the upstream forward + metered settlement. The W3C context
+      // is propagated to the upstream as `traceparent` alongside the legacy
+      // X-Request-Trace-Id header.
+      const forwardSpan = childSpan('upstream.forward', req as TraceRequest, {
+        model: body.model,
+        stream: !!body.stream,
+      });
+      const upstreamTraceparent = traceContext ? serializeTraceparent(traceContext) : undefined;
+
       if (body.stream) {
-        return this.handleStreamingForward(
+        await this.handleStreamingForward(
           res,
           forwardBody,
           route,
@@ -129,19 +153,23 @@ export class ProxyController {
           payment,
           traceId,
           startTime,
+          upstreamTraceparent,
+        );
+      } else {
+        await this.handleNonStreamingForward(
+          res,
+          forwardBody,
+          route,
+          txHash,
+          upstreamApiKey,
+          payment,
+          traceId,
+          startTime,
+          upstreamTraceparent,
         );
       }
-
-      return this.handleNonStreamingForward(
-        res,
-        forwardBody,
-        route,
-        txHash,
-        upstreamApiKey,
-        payment,
-        traceId,
-        startTime,
-      );
+      forwardSpan.end({ model: body.model, stream: !!body.stream });
+      return;
     } catch (error) {
       logger.error('Proxy error', { traceId, error: String(error) });
 
@@ -495,6 +523,7 @@ export class ProxyController {
     payment: PaymentRecord | null,
     traceId: string,
     startTime: number,
+    traceparent?: string,
   ) {
     logger.info('Forwarding streaming request to upstream', {
       traceId,
@@ -512,6 +541,7 @@ export class ProxyController {
       res,
       apiKey,
       traceId,
+      traceparent,
       async (totalTokens) => {
         const streamDuration = Date.now() - startTime;
 
@@ -580,6 +610,7 @@ export class ProxyController {
     payment: PaymentRecord | null,
     traceId: string,
     _startTime: number,
+    traceparent?: string,
   ) {
     logger.info('Forwarding request to upstream', {
       traceId,
@@ -593,6 +624,7 @@ export class ProxyController {
       route.upstreamUrl,
       apiKey,
       traceId,
+      traceparent,
     );
 
     // Calculate actual cost for per-token pricing

@@ -9,6 +9,9 @@ build/
 .next/
 .nx/
 
+# Local testnet journey state (contains live secrets — never commit)
+.testnet-journey/
+
 # Environment
 .env
 .env.local

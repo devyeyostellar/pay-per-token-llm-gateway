@@ -662,8 +662,10 @@ for the go/no-go gate and what a mainnet launch requires first.
 - [ ] Run behind Cloudflare/NGINX with TLS termination
 - [ ] Rotate JWT secrets regularly
 - [ ] Use separate Stellar accounts for receiving vs. payouts
-- [ ] Set up monitoring alerts for payment verification failures
-- [ ] Implement circuit breakers for upstream LLM failures
+- [x] Set up monitoring alerts for payment verification failures
+- [x] Implement circuit breakers for upstream LLM failures
+      (per-hostname, Redis-shared: 5 failures → open 30 s, half-open probe —
+      see THREAT-MODEL G7 and the `x402_circuit_breaker_opens_total` metric)
 
 See [SECURITY.md](./SECURITY.md) for full security policy.
 

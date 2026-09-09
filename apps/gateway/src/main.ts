@@ -8,6 +8,7 @@ import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { MetricsInterceptor } from './common/metrics.interceptor';
 import { MetricsService } from './common/metrics.service';
+import { createTraceContextMiddleware } from './common/trace-context.middleware';
 import { getConfig, validateEnv } from '@x402/config';
 import { logger, enableJsonLogs } from '@x402/logger';
 
@@ -27,6 +28,11 @@ async function bootstrap() {
 
   // Security headers (CSP, X-Frame-Options, HSTS, nosniff, etc.)
   app.use(helmet());
+
+  // W3C trace context: continue or start a trace, propagate `traceparent` on
+  // responses, record an `http.request` span per request. Must run before
+  // route handling so controllers can create child spans via req.traceContext.
+  app.use(createTraceContextMiddleware(app.get(MetricsService)));
 
   // Cookie parser — required for reading httpOnly session cookies set by
   // the auth controller and sent automatically by the browser.

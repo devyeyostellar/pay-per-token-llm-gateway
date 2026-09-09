@@ -34,6 +34,7 @@ export class MetricsService {
   readonly circuitBreakerOpens: Counter<string>;
   readonly underpaymentDebtsRecorded: Counter<string>;
   readonly onChainRecordFailures: Counter<string>;
+  readonly spanDuration: Histogram<string>;
 
   constructor() {
     this.registry = new Registry();
@@ -105,6 +106,14 @@ export class MetricsService {
     this.onChainRecordFailures = new Counter({
       name: 'x402_onchain_record_failures_total',
       help: 'Best-effort on-chain payment records that failed',
+      registers: [this.registry],
+    });
+
+    this.spanDuration = new Histogram({
+      name: 'x402_span_duration_ms',
+      help: 'Tracing span duration in milliseconds',
+      labelNames: ['span'] as const,
+      buckets: [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000],
       registers: [this.registry],
     });
 

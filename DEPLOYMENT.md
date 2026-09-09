@@ -416,6 +416,42 @@ cooperation — this leg is covered by the e2e suite (mocked token) and unit
 benchmarks; the payout transfer leg requires funding the multisig with real
 testnet USDC (fail-closed when unfunded was verified live).
 
+### 6.1.2 Live gateway journey run — 2026-09-09 ✅ (full-stack, reproducible)
+
+The **complete user journey through the running gateway** — fund → trustlines
+→ mint → unpaid 402 + quote → on-chain payment → 200 + receipt → replay
+rejected → forged hash rejected → balance check — was executed live against
+Stellar Testnet and passed every assertion. It is fully reproducible:
+
+```bash
+bash scripts/testnet-journey.sh
+```
+
+The script boots Postgres + Redis (Docker), applies the real migration
+history to a fresh database, builds and starts the gateway, funds fresh
+accounts via friendbot, and drives the HTTP + on-chain flow. Evidence with
+**full (untruncated) transaction hashes** is written to
+`docs/evidence/testnet-journey.json` (committed) and printed as a table;
+any unexpected HTTP status fails the run.
+
+| Step                                    | Result           | Evidence (full hashes / addresses)                                                                                 |
+| --------------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Fund fresh accounts (friendbot)         | ✅               | issuer `GBS36HW…V7WQB`, payer `GAHH47…55S4A`, receiver `GAWCBK…3NAIM`                                              |
+| Payer trustline (`USDC:journey issuer`) | ✅               | `03200f89e60f2e39f2baff0586ea3d09aa2ba45cf68d5298124de46e85c2926f`                                                 |
+| Receiver trustline                      | ✅               | `7e0fab2e08c9770f39a45f059674f7be757d111d8900050945ee577419d4240a`                                                 |
+| Mint 100 USDC → payer                   | ✅               | `8cd5ca6f59af641286fce6ebf36a593f3702cf0f2254fcf36107f1de501d95a0`                                                 |
+| Unpaid request → HTTP 402 + quote       | ✅ (5/5 asserts) | quote amount `1000000` stroops, asset `USDC`, issuer matches; memo `4a550a82569c4cb883d33b50`                      |
+| On-chain payment (repo wallet builder)  | ✅               | `de98320e68074d0a97dd63a016195ea2551ac004aabc52f1cea97f3ffe11c100`, ledger **4585952**, 0.1 USDC → provider wallet |
+| Retry with `X-Payment-Hash`             | ✅ (4/4 asserts) | HTTP 200 + `X-Payment-Receipt`; `receipt.txHash` matches, `status: confirmed`                                      |
+| **Replay same hash**                    | ✅ **402**       | `"This payment has already been used"` — single-use enforcement live                                               |
+| **Forged / never-existing hash**        | ✅ **402**       | `"Payment verification failed: …"` — fail-closed                                                                   |
+| Final balances                          | ✅               | receiver holds the paid 0.1 USDC (money visibly moved)                                                             |
+
+This closes the previous evidence gap (the §6.1.1 run exercised the
+contracts directly; this run exercises the **gateway HTTP + verification +
+single-use path** against the live chain). Horizon links for every step are
+in the evidence JSON.
+
 ### 6.2 Operations
 
 - Health/readiness semantics, RTO/RPO targets, backup/restore and DR

@@ -17,7 +17,7 @@
 | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Third-party smart-contract audit | **Not completed.** No external audit firm has reviewed the Soroban contracts or the gateway. |
 | Self-audit | `AUDIT.md` (2026-08-11) + a fresh audit-and-hardening pass on **2026-09-08**: quote-window integrity (`issuedAt`), Horizon/Soroban fetch timeouts, request-size bounds, readiness endpoints, Prometheus metrics, dependency overrides (0 critical), CI secret/container/lockfile scans, non-root Docker images, streaming backpressure. |
-| Test coverage (contracts) | payment-verifier **23** · credit-escrow **43** · multisig **32** unit tests under `cargo test`. Hand-written edge cases only — no property/fuzz/invariant suite, no external review, no executed gas benchmark (methodology in `GAS-OPTIMIZATION.md`). |
+| Test coverage (contracts) | payment-verifier **29** · credit-escrow **46** · multisig **36** tests under `cargo test` — hand-written edge cases PLUS **deterministic property-based suites** (`src/property.rs` per contract: pagination window math, replay-set semantics, escrow accounting walk, multisig quorum ordering; seeded PRNG, no external fuzz runner). Gas/storage benchmarks **executed and CI-gated** (`src/bench.rs`, ledger in `GAS-OPTIMIZATION.md` §5.5). No external review. |
 | Test coverage (gateway) | Unit suites green with coverage gates (gateway 127 unit + 34 e2e; x402-core 66 incl. deterministic property-based tests; validation 25; sdk 15). |
 | Disclosure policy | `SECURITY.md` now lists concrete residual risks (§"Known Residual Risks") and the CI scanning pipeline. |
 
@@ -149,7 +149,7 @@ done or an explicit decision point:
 | Item                                                                                           | Status                                                                                                                                                                                                                                                                                                                                      |
 | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `AUTH_DEV_MODE=true` + `NODE_ENV=production` boot refusal                                      | ✅ Done (`packages/config` guard + tests). The old any-wallet `dev-sig-` bypass can no longer reach production.                                                                                                                                                                                                                             |
-| Per-token underpayment enforcement (deposit + outstanding-debt top-up gate, completion cap)    | ✅ Done. New `UnderpaymentDebt` Prisma model — **requires `pnpm db:push`** (repo has no migration files) before the debt-gate queries run against a real DB.                                                                                                                                                                                |
+| Per-token underpayment enforcement (deposit + outstanding-debt top-up gate, completion cap)    | ✅ Done. New `UnderpaymentDebt` Prisma model + **migration** (`20260909000000_add_underpayment_debt_drop_legacy`), so `prisma migrate deploy` on a fresh database produces the complete schema — verified on every CI run by the backup/restore drill (`scripts/backup-restore-drill.sh`, job `backup-restore`).                            |
 | Soroban contracts migrated to **persistent storage** (per-entry ledger entries, per-entry TTL) | ✅ Done, commit `c769a99`. **This changed the storage layout — mainnet MUST deploy the new WASM.** There is no mainnet state, so this is a clean redeploy, not a migration.                                                                                                                                                                 |
 | Per-entry TTL policy                                                                           | ⚠️ Deliberate tradeoff: an untouched record needs a paid restore-from-archive read after `LEDGERS_TO_LIVE` ledgers. Fine for an audit trail; document for operators.                                                                                                                                                                        |
 | Credit-escrow settlement                                                                       | ⚠️ Opt-in, **experimental**, fire-and-forget (no enforcement without the account model). Keep disabled for mainnet v1 or make it a product decision (open issue #25).                                                                                                                                                                       |
@@ -193,8 +193,10 @@ gate, distinct from the README's generic production checklist.
 
 ### C. Gateway & data
 
-- [ ] `pnpm db:push` applied so the `UnderpaymentDebt` table exists; schema
-      diff reviewed.
+- [x] `UnderpaymentDebt` covered by the migration history
+      (`20260909000000_add_underpayment_debt_drop_legacy`) — `prisma
+    migrate deploy` on a fresh database produces the full schema, verified
+      by the backup/restore drill in CI.
 - [ ] `AUTH_DEV_MODE` unset/false in the mainnet environment (boot guard
       enforced).
 - [ ] Email-notification decision made (wired, or SMTP config removed).

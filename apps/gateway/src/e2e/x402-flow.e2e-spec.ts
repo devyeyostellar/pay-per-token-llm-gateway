@@ -4,6 +4,7 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import request from 'supertest';
 import { AppModule } from '../app.module';
 import { HttpExceptionFilter } from '../common/filters/http-exception.filter';
+import { createTraceContextMiddleware } from '../common/trace-context.middleware';
 
 // The proxy re-validates upstream DNS at request time (SSRF/rebinding
 // guard). The e2e suite's mocked upstream (api.mock-llm.example.com) does
@@ -382,6 +383,7 @@ describe('x402 Gateway E2E — Core Flow', () => {
       .compile();
     app = moduleFixture.createNestApplication();
     app.setGlobalPrefix('api/v1');
+    app.use(createTraceContextMiddleware());
     app.useGlobalFilters(new HttpExceptionFilter());
     app.useGlobalPipes(
       new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
@@ -397,6 +399,22 @@ describe('x402 Gateway E2E — Core Flow', () => {
     resetMockStore();
     jest.clearAllMocks();
     global.fetch = createHorizonAndLLMFetch() as any;
+  });
+
+  it('propagates W3C trace context across the request path', async () => {
+    // A caller-provided traceparent is continued (same trace id) on the
+    // response, and the legacy X-Request-Trace-Id header matches.
+    const traceId = 'cafebabe'.repeat(4); // 32 hex chars
+    const incoming = `00-${traceId}-${'1'.repeat(16)}-01`;
+
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/chat/completions')
+      .set('traceparent', incoming)
+      .send({ model: 'gpt-4', messages: [{ role: 'user', content: 'trace' }] })
+      .expect(402);
+
+    expect(res.headers['traceparent']).toMatch(new RegExp(`^00-${traceId}-[a-f0-9]{16}-01$`));
+    expect(res.headers['x-request-trace-id']).toBe(traceId);
   });
 
   it('returns 402 with quote when no payment header', async () => {

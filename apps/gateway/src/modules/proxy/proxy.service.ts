@@ -296,6 +296,7 @@ export class ProxyService {
     upstreamUrl: string,
     apiKey?: string,
     traceId?: string,
+    traceparent?: string,
   ): Promise<{ response: ChatCompletionResponse; responseTime: number }> {
     const config = getConfig();
     const startTime = Date.now();
@@ -321,6 +322,7 @@ export class ProxyService {
             headers: {
               'Content-Type': 'application/json',
               ...(traceId ? { 'X-Request-Trace-Id': traceId } : {}),
+              ...(traceparent ? { traceparent } : {}),
               ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
             },
             body: JSON.stringify(request),
@@ -383,6 +385,7 @@ export class ProxyService {
     res: Response,
     apiKey?: string,
     traceId?: string,
+    traceparent?: string,
     onDone?: (totalTokens?: number) => void | Promise<void>,
   ): Promise<void> {
     const config = getConfig();
@@ -413,6 +416,7 @@ export class ProxyService {
           'Content-Type': 'application/json',
           Accept: 'text/event-stream',
           ...(traceId ? { 'X-Request-Trace-Id': traceId } : {}),
+          ...(traceparent ? { traceparent } : {}),
           ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
         },
         body: JSON.stringify({ ...request, stream: true }),

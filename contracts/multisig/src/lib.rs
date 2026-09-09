@@ -32,8 +32,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, token, Address, Env, IntoVal, String,
-    Symbol, Val, Vec,
+    contract, contractimpl, contracttype, symbol_short, token, Address, Env, IntoVal, Symbol,
+    Val, Vec,
 };
 
 #[contracttype]
@@ -44,7 +44,11 @@ pub struct MultisigConfig {
     pub token: Address,
 }
 
+// `createdAt` is deliberately camelCase: the field is part of the on-chain
+// data layout (Soroban clients address it as `createdAt`). Keeping the name
+// stable preserves ABI compatibility with deployed instances.
 #[contracttype]
+#[allow(non_snake_case)]
 #[derive(Clone)]
 pub struct Proposal {
     pub id: u32,
@@ -352,6 +356,9 @@ fn has_unique_signers(signers: &Vec<Address>) -> bool {
 mod bench;
 
 #[cfg(test)]
+mod property;
+
+#[cfg(test)]
 mod test {
     use super::*;
     use soroban_sdk::testutils::storage::Instance as _;
@@ -359,6 +366,7 @@ mod test {
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::testutils::Ledger as _;
     use soroban_sdk::token::StellarAssetClient;
+    use soroban_sdk::String;
 
     #[test]
     fn test_init_with_valid_signers() {

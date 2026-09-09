@@ -237,6 +237,10 @@ Sizes are enforced in CI (build + gate step in the `contracts` job).
 2. Consider **batching the three persistent writes** in `record_payment` into
    fewer, larger entries only if benchmarks show write amplification matters
    — current per-entry design is the correct default for Soroban rent.
-3. Property/fuzz the pagination math with `proptest` (offline, no gas cost).
+3. ~~Property/fuzz the pagination math~~ — **done 2026-09-09**: deterministic
+   property-based suites now live in each contract (`src/property.rs`, seeded
+   PRNG): multisig pagination-window math + quorum-ordering, credit-escrow
+   accounting walk, payment-verifier replay-set semantics (29/46/36 tests,
+   CI-gated).
 4. Independent audit remains the gate for mainnet (see
    [`MAINNET_READINESS.md`](./MAINNET_READINESS.md)).

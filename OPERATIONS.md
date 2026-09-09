@@ -34,9 +34,20 @@ gpg --decrypt /backups/x402-latest.dump.gpg | pg_restore \
 ```
 
 - Keep hourly dumps for 7 days, daily for 30 days, monthly for 12 months.
-- **Test restore monthly** — an untested backup is not a backup.
+- **Test restore monthly — automated.** `scripts/backup-restore-drill.sh`
+  proves the dump→restore round-trip is lossless every run and every PR
+  (CI job `backup-restore`): it applies the **real migration history** to a
+  throwaway database, seeds every table, `pg_dump`s, restores into a fresh
+  database, and asserts full parity (identical table list, row count per
+  table, and spot-checked sample rows incl. `UnderpaymentDebt`). Run it
+  locally with `bash scripts/backup-restore-drill.sh` (docker) or against
+  your own pair of databases via `DRILL_SOURCE_URL` / `DRILL_TARGET_URL`.
+  It exits non-zero on any mismatch, so a broken backup path fails CI.
 - Prisma migrations: on restore, the schema is embedded in the dump; then run
-  `pnpm db:migrate` only for post-restore schema drift (review first).
+  `pnpm db:migrate` only for post-restore schema drift (review first). The
+  migration history now covers the full schema (incl. `UnderpaymentDebt`),
+  so `prisma migrate deploy` on a fresh database produces the complete
+  schema — verified by the drill on every run.
 
 ### 2.2 Redis
 

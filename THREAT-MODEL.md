@@ -164,5 +164,10 @@
 - Concurrency: Redis `SET NX` claim race and in-memory claim races tested.
 - Negative tests: wrong asset, wrong recipient, expired quote, pre-issued
   payment, malformed amounts, non-numeric prices, oversize payloads.
-- Contracts: hand-written edge-case suites (see §3.3); cargo-fuzz/proptest
-  integration and an external audit are tracked as mainnet gates.
+- Contracts: hand-written edge-case suites (see §3.3) **plus deterministic
+  property-based suites** (`src/property.rs` per contract, seeded PRNG):
+  payment-verifier replay-set semantics, credit-escrow
+  deposit→charge→refund→withdraw accounting invariant, multisig
+  pagination-window + quorum-ordering + rotation invariants — all green under
+  `cargo test` and CI-gated. An external audit remains the outstanding
+  mainnet gate.

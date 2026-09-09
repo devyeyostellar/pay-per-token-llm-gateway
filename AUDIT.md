@@ -194,19 +194,23 @@ Each invariant below has automated tests that fail if it regresses:
 
 ## 4. Test & coverage posture
 
-| Area                                  | Count / gate                                                                             |
-| ------------------------------------- | ---------------------------------------------------------------------------------------- |
-| Gateway unit                          | 127 tests, 10 suites; coverage thresholds 70% (statements/lines)                         |
-| Gateway e2e                           | 34 tests (self-contained; mocks DB/Redis; covers 402 flow, replay, debt-gate, streaming) |
-| x402-core                             | 66 tests incl. **deterministic property-based** suites (seeded PRNG, 500 iters/property) |
-| validation                            | 25 tests (new target — was untested)                                                     |
-| SDK / config / wallet / dashboard-lib | 15 / existing / existing / existing, all green                                           |
-| Contracts                             | 23 / 43 / 32 unit tests (CI `cargo test`); edge cases + TTL + auth + quorum              |
+| Area                                  | Count / gate                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Gateway unit                          | 135 tests, 12 suites; coverage thresholds 70% (statements/lines)                                                                                                                                                                                                                                                                                             |
+| Gateway e2e                           | 35 tests (self-contained; mocks DB/Redis; covers 402 flow, replay, debt-gate, streaming, W3C trace propagation)                                                                                                                                                                                                                                              |
+| x402-core                             | 66 tests incl. **deterministic property-based** suites (seeded PRNG, 500 iters/property)                                                                                                                                                                                                                                                                     |
+| validation                            | 25 tests (new target — was untested)                                                                                                                                                                                                                                                                                                                         |
+| notifications                         | 8 tests (new target — idempotent delivery, stable eventId + signed body across retries)                                                                                                                                                                                                                                                                      |
+| SDK / config / wallet / dashboard-lib | 15 / existing / existing / existing, all green                                                                                                                                                                                                                                                                                                               |
+| Contracts                             | 29 / 46 / 36 tests under `cargo test` — hand-written edge cases PLUS **deterministic property-based suites** (`src/property.rs` per contract: payment-verifier replay-set semantics, credit-escrow deposit→charge→refund→withdraw accounting walk, multisig pagination-window + quorum-ordering + rotation invariants; seeded PRNG, no external fuzz runner) |
 
-Measurable targets vs. maturity bar: e2e thresholds were ratcheted (55% stmts
-/ 22% branches) and unit thresholds hold at 70%; the **next ratchet** is
-raising e2e thresholds and adding cargo proptest/fuzz — tracked in
-`GAS-OPTIMIZATION.md` §6 and `MAINNET_READINESS.md` §1.
+Measurable targets vs. maturity bar: e2e thresholds were ratcheted again
+(56% stmts / 25% branches / 37% funcs / 53% lines) and unit thresholds hold
+at 70%. Contract property/fuzz suites (previously an open gap — see the old
+THREAT-MODEL §6 and GAS-OPTIMIZATION §6 items) are now **implemented and
+CI-gated**; the remaining **next ratchet** is raising e2e thresholds further
+as scenarios are added — tracked in `GAS-OPTIMIZATION.md` §6 and
+`MAINNET_READINESS.md` §1.
 
 ---
 

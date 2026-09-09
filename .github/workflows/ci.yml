@@ -118,6 +118,59 @@ jobs:
         env:
           NODE_ENV: test
 
+  backup-restore:
+    name: Backup/Restore Drill
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: x402_gateway
+          POSTGRES_USER: x402
+          POSTGRES_PASSWORD: x402_drill
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U x402"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read Node version from .nvmrc
+        id: nvm
+        run: echo "NODE_VERSION=$(cat .nvmrc)" >> $GITHUB_OUTPUT
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.nvm.outputs.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+
+      # The drill proves the documented recovery path (OPERATIONS.md §2.1)
+      # every run: real migrations → seed → pg_dump → pg_restore into a
+      # FRESH database → table/row/sample parity. It also fails when the
+      # schema drifts from the migration history (a fresh `migrate deploy`
+      # must produce the full schema — this is what caught the missing
+      # UnderpaymentDebt migration in 2026-09-09).
+      - name: Create source + target databases
+        run: |
+          docker run --rm --network host postgres:16-alpine \
+            psql "postgresql://x402:x402_drill@127.0.0.1:5432/postgres" -v ON_ERROR_STOP=1 -c \
+            'CREATE DATABASE x402_drill_source;' -c 'CREATE DATABASE x402_drill_target;'
+
+      - name: Run backup/restore drill
+        run: bash scripts/backup-restore-drill.sh
+        env:
+          DRILL_SOURCE_URL: postgresql://x402:x402_drill@127.0.0.1:5432/x402_drill_source
+          DRILL_TARGET_URL: postgresql://x402:x402_drill@127.0.0.1:5432/x402_drill_target
+
   quickstart-env:
     name: Verify .env Quickstart
     runs-on: ubuntu-latest

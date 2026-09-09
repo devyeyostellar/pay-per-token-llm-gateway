@@ -14,15 +14,17 @@ const config: Config = {
   setupFiles: ['<rootDir>/jest.setup.ts'],
   coverageDirectory: '../../coverage/apps/gateway-e2e',
   // coverageReporters is configured via the nx executor options (global config).
-  // Thresholds calibrated slightly below current coverage (58% stmts / 26%
-  // branches with the full e2e suite green) so CI stays green while enforcing
-  // a floor. Ratchet up over time as scenarios are added.
+  // Thresholds calibrated slightly below current coverage (2026-09-09:
+  // 57.4% stmts / 29.3% branches / 40.9% funcs / 56.7% lines with the full
+  // e2e suite green) so CI stays green while enforcing a floor. Ratcheted
+  // up from 55/22/35/52 (2026-09-08) after the trace-context scenarios were
+  // added. Ratchet up over time as scenarios are added.
   coverageThreshold: {
     global: {
-      statements: 55,
-      branches: 22,
-      functions: 35,
-      lines: 52,
+      statements: 56,
+      branches: 25,
+      functions: 37,
+      lines: 53,
     },
   },
 };
