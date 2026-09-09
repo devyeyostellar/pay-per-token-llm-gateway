@@ -195,7 +195,7 @@ gate, distinct from the README's generic production checklist.
 
 - [x] `UnderpaymentDebt` covered by the migration history
       (`20260909000000_add_underpayment_debt_drop_legacy`) — `prisma
-  migrate deploy` on a fresh database produces the full schema, verified
+migrate deploy` on a fresh database produces the full schema, verified
       by the backup/restore drill in CI.
 - [ ] `AUTH_DEV_MODE` unset/false in the mainnet environment (boot guard
       enforced).
@@ -244,6 +244,16 @@ platform-express) and `svgo 3.3.4` (2 ReDoS advisories, build-tooling via
 | Package           | Severity | Why not fixed                                                                                                                                                                                         | Track                                                                         |
 | ----------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
 | `image-size` (×2) | high     | **no patched version exists** (patched: null; vulnerable ≤2.0.2, latest 2.0.2); dev-only transitive of `less@4.1.3` via the unused `@nx/vite`→vite→less chain (this project uses no vite/vitest/less) | drop the `@nx/vite`/`@nx/module-federation` chain or wait for an upstream fix |
+
+**Rust (contracts) — report-only, via osv-scanner on the committed Cargo.lock
+files** (tracked 2026-09-09): `soroban-env-host`/`stellar-xdr`
+(GHSA-pm4j-7r4q-ccg8, GHSA-vwc7-r8mq-g2x9, GHSA-x57h-xx53-v53w) and
+`paste` (RUSTSEC-2024-0388) / `derivative` (RUSTSEC-2024-0436, derive-macro
+hygiene). All are pinned by the soroban-sdk version the contracts build
+against; bumping them means a Soroban SDK upgrade, which is deliberately
+held until the third-party contract audit (MAINNET_READINESS §1) — the
+advisories are low-risk for these contracts and do not affect the gateway
+runtime.
 
 ## 8. References
 

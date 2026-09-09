@@ -409,8 +409,11 @@ jobs:
       # both image-size, no patched release) with no runtime-reachable path;
       # the hard gate is the `security` job's critical-level pnpm audit.
       # Findings land in the GitHub Security tab via SARIF.
+      # v0.28.0 is broken upstream (it references the nonexistent
+      # aquasecurity/setup-trivy@v0.2.1); v0.36.0 pins setup-trivy by full SHA
+      # to v0.2.6, which exists.
       - name: Run Trivy (fs)
-        uses: aquasecurity/trivy-action@v0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -433,10 +436,17 @@ jobs:
 
       # Scans all lockfiles (pnpm-lock.yaml, contracts Cargo.lock) against
       # the OSV database. Report-only — see the `security` job for the gate.
+      #
+      # The osv-scanner-action composite only exposes scan-args (no
+      # fail-on-vuln input) and exits 1 whenever findings exist, so run the
+      # scanner image directly and swallow the exit code: findings are printed
+      # to the log, and the `security` job's critical gate remains the hard
+      # stop. `--recursive ./` is the action's own default scan-args.
       - name: Run OSV scanner
-        uses: google/osv-scanner-action/osv-scanner-action@v2.5.1
-        with:
-          fail-on-vuln: false
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/repo" -w /repo \
+            ghcr.io/google/osv-scanner-action:v2.5.1 --recursive ./ \
+            || true
 
   dast:
     name: DAST (OWASP ZAP baseline)
